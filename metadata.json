@@ -1,0 +1,8 @@
+{
+  "name": "Remix Formation Wars",
+  "description": "Tactical 2.5D RTS/4X simulation engine and systems verification prototype featuring Hermite spline kinematics, 5-layer defense ladder, physical logistics, and sensor warfare.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

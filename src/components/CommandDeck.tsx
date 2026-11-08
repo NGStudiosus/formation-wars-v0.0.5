@@ -41,6 +41,8 @@ import {
   Trash2,
   Crown,
   X,
+  Flag,
+  Handshake,
 } from 'lucide-react';
 
 export type CommandPage =
@@ -92,6 +94,8 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
 }) => {
   const { settings } = useSettingsStore();
   const uiScale = settings?.uiScale ?? 1.0;
+  const commandDeckScale = settings?.commandDeckScale ?? 1.0;
+  const effectiveDeckScale = uiScale * commandDeckScale;
 
   const isMultiSelect = selectedShipIds && selectedShipIds.length > 1;
   const selectedShips = isMultiSelect
@@ -247,7 +251,8 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
   // Helper to clone icon to 36px-42px range (38px standard)
   const renderIcon = (icon: React.ReactNode) => {
     if (React.isValidElement(icon)) {
-      const existingClass = (icon.props as any)?.className || '';
+      const rawClass = (icon.props as any)?.className;
+      const existingClass = typeof rawClass === 'string' ? rawClass : '';
       const cleanedClass = existingClass.replace(/w-[0-9.]+\s*h-[0-9.]+/, '').trim();
       return React.cloneElement(icon as React.ReactElement<any>, {
         className: `${cleanedClass} w-[38px] h-[38px] transition-transform duration-100 group-hover:scale-105`,
@@ -852,6 +857,15 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
         icon: <Wrench className="w-3.5 h-3.5 text-emerald-300" />,
         accent: '#10b981',
       },
+      {
+        type: 'GARN_MISSILE_POD',
+        code: 'SDMP',
+        label: 'SDMP',
+        sub: 'POD',
+        icon: <Crosshair className="w-3.5 h-3.5 text-emerald-400" />,
+        accent: '#10b981',
+        reqTechName: 'Military Research: Tier 1 Point Defense & Defense Grid',
+      },
     ];
 
     milSpecs.forEach((spec, idx) => {
@@ -1106,6 +1120,21 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
     ];
 
     // Row 2: Cruisers, Battleships, & Carriers (Slots 7-13)
+    const garnCruiserSpec: CraftSpec = {
+      role: 'CRUISER',
+      code: 'CR',
+      name: 'Garn Cruiser',
+      tierCategory: 'MEDIUM',
+      metallic: 4200,
+      organic: 1100,
+      buildTime: 32,
+      requiresTech: true,
+      techCode: 'CL',
+      techName: 'Tier 2 Military Research: [Annular Cruiser Frame Certification]',
+      icon: <Anchor className="w-3.5 h-3.5 text-emerald-400" />,
+      accent: '#10b981',
+    };
+
     const row2Crafts: CraftSpec[] = [
       {
         role: 'LIGHT_CRUISER',
@@ -1208,10 +1237,80 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
       accent: '#fbbf24',
     };
 
+    const cityShipSpec: CraftSpec = {
+      role: 'CITY_SHIP',
+      code: 'CS',
+      name: 'City Ship',
+      tierCategory: 'HEAVY',
+      metallic: 52000,
+      organic: 16000,
+      buildTime: 140,
+      requiresTech: true,
+      techCode: 'CS',
+      techName: 'Tier 10 Military Research: [City Ship Civilization Citadel Protocol]',
+      icon: <Crown className="w-3.5 h-3.5 text-purple-400" />,
+      accent: '#c084fc',
+    };
+
+    const liaalLightSpec: CraftSpec = {
+      role: 'LIAAL_LIGHT',
+      code: 'L-WS',
+      name: 'L-WS Light',
+      tierCategory: 'LIGHT',
+      metallic: 2400,
+      organic: 650,
+      buildTime: 22,
+      requiresTech: false,
+      icon: <Crosshair className="w-3.5 h-3.5 text-amber-400" />,
+      accent: '#f97316',
+    };
+
+    const liaalMediumSpec: CraftSpec = {
+      role: 'LIAAL_MEDIUM',
+      code: 'M-WS',
+      name: 'M-WS Med',
+      tierCategory: 'MEDIUM',
+      metallic: 5800,
+      organic: 1400,
+      buildTime: 38,
+      requiresTech: true,
+      techCode: 'M-WS',
+      techName: 'Tier 4 Military Research: [Liaal 45-Salvo Volley Battery]',
+      icon: <Crosshair className="w-3.5 h-3.5 text-orange-400" />,
+      accent: '#ea580c',
+    };
+
+    const liaalHeavySpec: CraftSpec = {
+      role: 'LIAAL_HEAVY',
+      code: 'H-WS',
+      name: 'H-WS Hvy',
+      tierCategory: 'HEAVY',
+      metallic: 20000,
+      organic: 4500,
+      buildTime: 80,
+      requiresTech: true,
+      techCode: 'H-WS',
+      techName: 'Tier 8 Military Research: [Liaal 100-Salvo Cataclysm Titan]',
+      icon: <Zap className="w-3.5 h-3.5 text-red-400" />,
+      accent: '#c2410c',
+    };
+
+    const playerFaction = engine.playerFaction || (engine as any).globalState?.playerFaction || 'NOVAN';
+    const isGarn = playerFaction === 'GARN' || (engine.ships ?? []).some(s => s && s.role === 'HQ' && (s.factionId === 'GARN' || (s.faction as any) === 'GARN'));
+    const isYestiri = playerFaction === 'YESTIRI' || (engine.ships ?? []).some(s => s && s.role === 'HQ' && (s.factionId === 'YESTIRI' || (s.faction as any) === 'YESTIRI'));
+    const isLiaal = playerFaction === 'LIAAL' || (engine.ships ?? []).some(s => s && s.role === 'HQ' && (s.factionId === 'LIAAL' || (s.faction as any) === 'LIAAL'));
+    const isKovak = playerFaction === 'KOVAK' || (engine.ships ?? []).some(s => s && s.role === 'HQ' && (s.factionId === 'KOVAK' || (s.faction as any) === 'KOVAK'));
+
     const renderCraftSlot = (craft: CraftSpec, slotIdx: number) => {
       const isTechUnlocked = craft.requiresTech
         ? engine.isHullUnlocked(craft.techCode || craft.code)
         : true;
+
+      const costMultiplier = isKovak ? 0.50 : 1.0;
+      const buildTimeMultiplier = isKovak ? 0.50 : 1.0;
+      const effectiveMetallic = Math.round(craft.metallic * costMultiplier);
+      const effectiveOrganic = Math.round(craft.organic * costMultiplier);
+      const effectiveBuildTime = Math.max(1, Math.round(craft.buildTime * buildTimeMultiplier));
 
       let activeStation: ShipEntity | null = null;
       let isBuildable = false;
@@ -1304,9 +1403,9 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
         }
       }
 
-      const canAfford = hqResources.metallic >= craft.metallic && hqResources.organic >= craft.organic;
-      const deficitM = Math.max(0, craft.metallic - hqResources.metallic);
-      const deficitO = Math.max(0, craft.organic - hqResources.organic);
+      const canAfford = hqResources.metallic >= effectiveMetallic && hqResources.organic >= effectiveOrganic;
+      const deficitM = Math.max(0, effectiveMetallic - hqResources.metallic);
+      const deficitO = Math.max(0, effectiveOrganic - hqResources.organic);
       const hasResourceDeficit = !canAfford;
 
       const lockType: 'RESEARCH' | 'SLIPWAY' | 'RESOURCE' | 'NONE' = !isTechUnlocked
@@ -1319,7 +1418,7 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
 
       const costText = hasResourceDeficit
         ? `-${deficitM > 0 ? `${deficitM}M` : ''}${deficitO > 0 ? ` ${deficitO}O` : ''}`.trim()
-        : `${craft.metallic}M`;
+        : `${effectiveMetallic}M`;
 
       const targetStation = activeStation ?? (localYards[0] || selectedShip);
       const queueItems = targetStation
@@ -1367,13 +1466,13 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
             role: craft.role,
             code: craft.code,
             name: craft.name,
-            metallic: craft.metallic,
-            organic: craft.organic,
+            metallic: effectiveMetallic,
+            organic: effectiveOrganic,
             deficitM,
             deficitO,
             hasResourceDeficit,
             lockType,
-            buildTime: craft.buildTime,
+            buildTime: effectiveBuildTime,
             requiresShipyard: craft.tierCategory !== 'LIGHT' || craft.role === 'LIGHT_CRUISER',
             isLocked: !isBuildable,
             lockReason,
@@ -1397,20 +1496,219 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
     };
 
     // Render Row 1: Light Screeners & Fleet Logistics (slots 0-6)
-    row1Crafts.forEach((craft, idx) => {
+    // For Liaal: Only Light Warship (L-WS) + Logistics (Miners, Colliers, Tankers, Repairs, Salvagers)
+    // For Yestiri: Frigate does not exist, they start directly with the Destroyer unlocked
+    let effectiveRow1Crafts: CraftSpec[];
+    if (isLiaal) {
+      effectiveRow1Crafts = [
+        liaalLightSpec,
+        ...row1Crafts.filter(craft => craft.role !== 'FRIGATE' && craft.role !== 'DESTROYER')
+      ];
+    } else if (isYestiri) {
+      effectiveRow1Crafts = row1Crafts
+        .filter(craft => craft.role !== 'FRIGATE')
+        .map(craft => craft.role === 'DESTROYER' ? { ...craft, requiresTech: false, techCode: undefined, techName: undefined } : craft);
+    } else {
+      effectiveRow1Crafts = row1Crafts;
+    }
+
+    effectiveRow1Crafts.forEach((craft, idx) => {
       slots.push(renderCraftSlot(craft, idx));
     });
 
-    // Render Row 2: Cruisers, Battleships, Carriers (slots 7-12)
-    row2Crafts.forEach((craft, idx) => {
+    while (slots.length < 7) {
+      slots.push(renderEmptySlot(slots.length));
+    }
+
+    let effectiveRow2Crafts: CraftSpec[];
+    if (isLiaal) {
+      // Liaal native warships (Medium and Heavy) + Allied Proxy Hulls
+      const alliedFactions = typeof engine.getDiplomaticAllies === 'function'
+        ? engine.getDiplomaticAllies()
+        : ['LIAAL'];
+      
+      const proxySpecs: CraftSpec[] = [];
+      if (alliedFactions.includes('GARN')) {
+        proxySpecs.push({
+          role: 'DREADNOUGHT',
+          code: 'DN',
+          name: '[GARN PROXY] Dreadnought',
+          tierCategory: 'HEAVY',
+          metallic: 25000,
+          organic: 5000,
+          buildTime: 90,
+          requiresTech: true,
+          techCode: 'DN',
+          techName: 'Garn Fortress Dreadnought Proxy Blueprint (+65% Armor, +35% Shield)',
+          icon: <Shield className="w-3.5 h-3.5 text-emerald-400" />,
+          accent: '#22c55e',
+        });
+      }
+      if (alliedFactions.includes('NOVAN')) {
+        proxySpecs.push({
+          role: 'BATTLECRUISER',
+          code: 'BC',
+          name: '[NOVAN PROXY] Battlecruiser',
+          tierCategory: 'MEDIUM',
+          metallic: 8500,
+          organic: 1800,
+          buildTime: 45,
+          requiresTech: true,
+          techCode: 'BC',
+          techName: 'Novan Republic Capital Raider Proxy Blueprint (Tactical Micro-Jump Overdrive)',
+          icon: <Zap className="w-3.5 h-3.5 text-cyan-400" />,
+          accent: '#00f0ff',
+        });
+      }
+      if (alliedFactions.includes('ALDONAH')) {
+        proxySpecs.push({
+          role: 'HEAVY_CRUISER',
+          code: 'CH',
+          name: '[ALDONAH PROXY] Heavy Cruiser',
+          tierCategory: 'MEDIUM',
+          metallic: 5000,
+          organic: 1200,
+          buildTime: 35,
+          requiresTech: true,
+          techCode: 'CH',
+          techName: 'Alondahan Monarchy Brawler Proxy Blueprint (+50% Slab Armor HP)',
+          icon: <Anchor className="w-3.5 h-3.5 text-yellow-400" />,
+          accent: '#eab308',
+        });
+      }
+      if (alliedFactions.includes('YESTIRI')) {
+        proxySpecs.push({
+          role: 'CITY_SHIP',
+          code: 'CS',
+          name: '[YESTIRI PROXY] City-Ship',
+          tierCategory: 'HEAVY',
+          metallic: 52000,
+          organic: 16000,
+          buildTime: 140,
+          requiresTech: true,
+          techCode: 'CS',
+          techName: 'Yestiri Sodality Annular Flagship Proxy Blueprint (+40% Resonant Shield)',
+          icon: <Crown className="w-3.5 h-3.5 text-purple-400" />,
+          accent: '#c084fc',
+        });
+      }
+      if (alliedFactions.includes('KOVAK')) {
+        proxySpecs.push({
+          role: 'BATTLESHIP',
+          code: 'BB',
+          name: '[KOVAK PROXY] Swarm Battleship',
+          tierCategory: 'HEAVY',
+          metallic: 7000,
+          organic: 1500,
+          buildTime: 30,
+          requiresTech: true,
+          techCode: 'BB',
+          techName: 'Kovak Enclave Mass Swarm Battleship Proxy Blueprint (50% Cost & Build Time)',
+          icon: <Crosshair className="w-3.5 h-3.5 text-red-400" />,
+          accent: '#ef4444',
+        });
+      }
+
+      effectiveRow2Crafts = [
+        liaalMediumSpec,
+        liaalHeavySpec,
+        ...proxySpecs
+      ].slice(0, 5);
+    } else if (isGarn) {
+      // Garn does not distinguish between Light and Heavy Cruisers, fielding a single consolidated Cruiser chassis
+      effectiveRow2Crafts = [
+        garnCruiserSpec,
+        ...row2Crafts.filter(craft => craft.role !== 'LIGHT_CRUISER' && craft.role !== 'HEAVY_CRUISER' && craft.role !== 'CARRIER' && craft.code !== 'CV')
+      ];
+    } else if (isYestiri) {
+      // Yestiri line combatants culminate in their ultimate unit: the City Ship
+      effectiveRow2Crafts = [
+        ...row2Crafts.filter(craft => craft.role !== 'CARRIER' && craft.code !== 'CV'),
+        cityShipSpec
+      ];
+    } else if (playerFaction === 'NOVAN') {
+      effectiveRow2Crafts = row2Crafts;
+    } else {
+      effectiveRow2Crafts = row2Crafts.filter(craft => craft.role !== 'CARRIER' && craft.code !== 'CV');
+    }
+
+    // Render Row 2: Cruisers, Battleships, Carriers, City Ship, Liaal Warships (slots 7-12)
+    effectiveRow2Crafts.forEach((craft, idx) => {
       slots.push(renderCraftSlot(craft, 7 + idx));
     });
 
+    // Slot 12 (idx 11): PROXY BUILD TOGGLE (when yard/HQ selected)
+    const proxyEnabled = selectedShip ? selectedShip.allowProxyBuild !== false : true;
+    slots[11] = renderSlot(
+      11,
+      'cmd-hq-proxy-toggle',
+      'PROXY',
+      proxyEnabled ? 'ALLOW' : 'DENY',
+      <Handshake className={`w-3.5 h-3.5 ${proxyEnabled ? 'text-emerald-400' : 'text-rose-400'}`} />,
+      () => {
+        if (selectedShip) {
+          engine.toggleShipyardProxyBuild(selectedShip.id);
+        }
+      },
+      undefined,
+      {
+        type: 'ORDER',
+        payload: {
+          code: 'CFG-PRX',
+          title: 'Allied Proxy Commission Rights',
+          description: `Allied empires (such as Liaal) ${proxyEnabled ? 'ARE' : 'ARE NOT'} permitted to proxy buy ships at this shipyard slipway. Click to toggle.`,
+        },
+      },
+      {
+        active: proxyEnabled,
+        accentColor: proxyEnabled ? '#10b981' : '#f43f5e',
+      }
+    );
+
+    // Slot 13 (idx 12): RALLY POINT STATUS & CLEAR
+    const hasRally = Boolean(selectedShip?.rallyPoint);
+    slots[12] = renderSlot(
+      12,
+      'cmd-hq-rally-point',
+      'RALLY',
+      hasRally ? `${Math.round(selectedShip!.rallyPoint!.x)},${Math.round(selectedShip!.rallyPoint!.y)}` : 'R-CLICK',
+      <Flag className={`w-3.5 h-3.5 ${hasRally ? 'text-amber-400' : 'text-slate-400'}`} />,
+      () => {
+        if (selectedShip) {
+          if (hasRally) {
+            engine.setRallyPoint(selectedShip.id, null);
+          } else {
+            engine.addLog('LOGISTICS', `Right-click on tactical canvas to designate a rally point for ${selectedShip.name}.`, 'info');
+          }
+        }
+      },
+      undefined,
+      {
+        type: 'ORDER',
+        payload: {
+          code: 'ORD-RAL',
+          title: 'Tactical Fabrication Rally Point',
+          description: hasRally
+            ? `Active rally point set at [${Math.round(selectedShip!.rallyPoint!.x)}, ${Math.round(selectedShip!.rallyPoint!.y)}]. Newly constructed ships will immediately fly to this coordinate. Click to CLEAR rally point.`
+            : 'No rally point designated. Right-click anywhere on the tactical canvas to plot a rally point where newly commissioned ships will automatically rally.',
+        },
+      },
+      {
+        active: hasRally,
+        accentColor: hasRally ? '#f59e0b' : '#64748b',
+      }
+    );
+
+    // Fill any remaining gap before slot 14
+    while (slots.length < 13) {
+      slots.push(renderEmptySlot(slots.length));
+    }
+
     // Slot 14 (idx 13):
-    // If a shipyard is directly selected, expose Super-Carrier (CVF).
+    // If a shipyard is directly selected, expose Super-Carrier (CVF), City Ship (CS), or Liaal Heavy (H-WS).
     // If at HQ, provide [BACK] button to return to HQ Root.
     if (isYardSelected) {
-      slots.push(renderCraftSlot(superCarrierSpec, 13));
+      slots.push(renderCraftSlot(isLiaal ? liaalHeavySpec : isYestiri ? cityShipSpec : superCarrierSpec, 13));
     } else {
       slots.push(renderBackButton(13));
     }
@@ -1549,8 +1847,152 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
       )
     );
 
-    // Slots 5 through 14: Inactive empty slots
-    for (let i = 4; i < 14; i++) {
+    // Slot 5: Cold Shield Reboot (Novan) OR Autonomous Cleanup (Salvager)
+    const isSalvager = selectedShip.role === 'SCRAP' || (selectedShip.class as string) === 'SALVAGER';
+
+    if (isSalvager) {
+      const isCleanupOn = Boolean(selectedShip.cleanupStance);
+      const scrapUnits = selectedShip.scrapUnits || 0;
+      const scrapMax = selectedShip.scrapUnitsMax || 3;
+
+      slots.push(
+        renderSlot(
+          4,
+          'cmd-salvage-slot-cleanup',
+          'CLEANUP',
+          isCleanupOn ? 'ACTIVE' : 'STANDBY',
+          <RotateCcw className={`w-3.5 h-3.5 ${isCleanupOn ? 'text-emerald-400 animate-spin' : 'text-slate-400'}`} />,
+          () => {
+            engine.toggleShipCleanup(selectedShip.id);
+          },
+          undefined,
+          {
+            type: 'ORDER',
+            payload: {
+              code: 'ORD-CLN',
+              title: `Autonomous Battlefield Cleanup [${isCleanupOn ? 'ON' : 'OFF'}]`,
+              description:
+                'Orders salvage barge to autonomously sweep the sector for ship debris, load up to 3 units of scrap (Light=1U, Medium=2U, Heavy=3U), and ferry recovered resources back to the nearest Refinery or HQ.',
+            },
+          },
+          {
+            badge: `${scrapUnits}/${scrapMax}U`,
+            accentColor: isCleanupOn ? '#10b981' : undefined,
+            pulse: isCleanupOn,
+            shortcut: '[C]',
+          }
+        )
+      );
+
+      // Slot 6: Deposit Scrap Hold to Depot
+      slots.push(
+        renderSlot(
+          5,
+          'cmd-salvage-slot-deposit',
+          'DEPOSIT',
+          scrapUnits > 0 ? 'RETURN HQ' : 'EMPTY',
+          <Package className={`w-3.5 h-3.5 ${scrapUnits > 0 ? 'text-amber-400' : 'text-slate-500'}`} />,
+          () => {
+            if (scrapUnits > 0) {
+              engine.orderDepositScrap(selectedShip.id);
+            }
+          },
+          undefined,
+          {
+            type: 'ORDER',
+            payload: {
+              code: 'ORD-DEP',
+              title: `Deposit Scrap Hold (${scrapUnits}/${scrapMax} Units)`,
+              description:
+                'Commands the salvage vessel to navigate to the nearest friendly Headquarters or Refinery and unload stored wreck materials into the player stockpile.',
+            },
+          },
+          {
+            disabled: scrapUnits === 0,
+            badge: `${scrapUnits}U`,
+            shortcut: '[X]',
+          }
+        )
+      );
+
+      // Slots 7 through 14: Inactive empty slots
+      for (let i = 6; i < 14; i++) {
+        slots.push(renderEmptySlot(i));
+      }
+
+      return slots;
+    }
+
+    const playerFaction = engine.playerFaction || (engine as any).globalState?.playerFaction || 'NOVAN';
+    const isNovan = selectedShip.factionId === 'NOVAN' || playerFaction === 'NOVAN' || (selectedShip as any).isNovan;
+
+    if (isNovan) {
+      const cycleState = selectedShip.shieldCycleState || 'READY';
+      const isRebooting = cycleState === 'REBOOTING';
+      const isCooldown = cycleState === 'COOLDOWN';
+      const isReady = cycleState === 'READY';
+
+      let rebootLabel = 'COLD REBOOT';
+      let rebootSub = 'READY';
+      let rebootAccent = '#00f0ff';
+      let rebootDisabled = false;
+      let rebootPulse = false;
+
+      if (isRebooting) {
+        const remainingSec = ((selectedShip.shieldCycleTimer ?? 120) / 30).toFixed(1);
+        rebootLabel = 'REBOOTING';
+        rebootSub = `${remainingSec}s`;
+        rebootAccent = '#f59e0b';
+        rebootDisabled = true;
+        rebootPulse = true;
+      } else if (isCooldown) {
+        const remainingCd = Math.ceil((selectedShip.shieldCycleCooldown ?? 960) / 30);
+        rebootLabel = 'REBOOT CD';
+        rebootSub = `CD: ${remainingCd}s`;
+        rebootAccent = '#64748b';
+        rebootDisabled = true;
+      }
+
+      slots.push(
+        renderSlot(
+          4,
+          'cmd-warship-slot-cold-reboot',
+          rebootLabel,
+          rebootSub,
+          <RotateCcw className={`w-3.5 h-3.5 ${isRebooting ? 'text-amber-400 animate-spin' : isCooldown ? 'text-slate-500' : 'text-cyan-300'}`} />,
+          () => {
+            if (isReady) {
+              engine.triggerShieldReboot(selectedShip.id);
+            }
+          },
+          undefined,
+          {
+            type: 'ORDER',
+            payload: {
+              code: 'ORD-RBT',
+              title: isRebooting
+                ? `Shields Rebooting (${((selectedShip.shieldCycleTimer ?? 120) / 30).toFixed(1)}s)`
+                : isCooldown
+                ? `Reboot Recharge Cooldown (CD: ${Math.ceil((selectedShip.shieldCycleCooldown ?? 960) / 30)}s)`
+                : 'Cold Shield Reboot [Novan Doctrine]',
+              description:
+                'Instantly dumps thermal shields to 0% capacity for 4.0s before snapping to 100% capacity with 1.0s hardening (+20% flat damage mitigation). Requires shield damage to trigger.',
+            },
+          },
+          {
+            disabled: rebootDisabled,
+            accentColor: rebootAccent,
+            pulse: rebootPulse,
+            shortcut: '[R]',
+          }
+        )
+      );
+    } else {
+      slots.push(renderEmptySlot(4));
+    }
+
+    // Slots 6 through 14: Inactive empty slots
+    for (let i = 5; i < 14; i++) {
       slots.push(renderEmptySlot(i));
     }
 
@@ -2027,13 +2469,13 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
           const hq = engine.getHQ();
           if (builder && hq) {
             engine.launchBuilderTransitSpline(builder, hq.pos);
-            engine.addLog('BUILDER', `${builder.name}: Commencing return transit to Aegis-IV HQ Citadel mooring.`, 'info');
+            engine.addLog('BUILDER', `${builder.name}: Commencing return transit to ${hq.name} mooring slip.`, 'info');
           }
         },
         undefined,
         {
           type: 'ORDER',
-          payload: { code: 'RTN-HQ', title: 'Return to HQ', description: 'Plot autonomous Hermite transit vector to Aegis-IV Citadel mooring slip.' },
+          payload: { code: 'RTN-HQ', title: 'Return to HQ', description: `Plot autonomous Hermite transit vector to ${engine.getHQ()?.name || 'HQ Citadel'} mooring slip.` },
         },
         { accentColor: '#00f0ff' }
       )
@@ -2041,8 +2483,9 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
 
     // Slot 5: Resupply at HQ
     const hq = engine.getHQ();
+    const effectiveResupplyRange = (hq?.oreDropOffRange ?? hq?.dockingRadius ?? 260.0) + 100.0;
     const distToHq = (builder && hq) ? Math.hypot(builder.pos.x - hq.pos.x, builder.pos.y - hq.pos.y) : Infinity;
-    const canResupply = distToHq <= 260.0;
+    const canResupply = distToHq <= effectiveResupplyRange;
     slots.push(
       renderSlot(
         5,
@@ -2057,14 +2500,20 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
               builder.cargoOrganic = 5000;
               engine.addLog('BUILDER', `${builder.name}: Cargo hoppers replenished to maximum (5,000 M / 5,000 O).`, 'info');
             } else {
-              engine.addLog('BUILDER', `${builder.name}: Unable to resupply. Vessel must be within 260km of HQ Citadel.`, 'warn');
+              engine.addLog('BUILDER', `${builder.name}: Unable to resupply. Vessel must be within ${Math.round(effectiveResupplyRange)}km of HQ Citadel.`, 'warn');
             }
           }
         },
         undefined,
         {
           type: 'ORDER',
-          payload: { code: 'RESUPPLY', title: 'Replenish Fabrication Stock', description: canResupply ? 'Transfer raw metals and polymers from HQ reserves.' : 'OutOfRange: Return within 260km of HQ.' },
+          payload: {
+            code: 'RESUPPLY',
+            title: 'Replenish Fabrication Stock',
+            description: canResupply
+              ? 'Transfer raw metals and polymers from HQ reserves.'
+              : `OutOfRange: Return within ${Math.round(effectiveResupplyRange)}km of ${hq?.name || 'HQ'}.`
+          },
         },
         { disabled: !canResupply, accentColor: '#fbbf24' }
       )
@@ -2590,6 +3039,7 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
     const defKeys: StructureType[] = [
       'MISSILE_BATTERY',
       'PD_PLATFORM',
+      'GARN_MISSILE_POD',
     ];
 
     defKeys.forEach((sType, sIdx) => {
@@ -2859,9 +3309,9 @@ export const CommandDeck: React.FC<CommandDeckProps> = ({
         id="tactical-command-grid-container"
         className="command-deck-container transition-all duration-150"
         style={
-          uiScale !== 1.0
+          effectiveDeckScale !== 1.0
             ? {
-                transform: `scale(${uiScale})`,
+                transform: `scale(${effectiveDeckScale})`,
                 transformOrigin: 'bottom right',
               }
             : undefined

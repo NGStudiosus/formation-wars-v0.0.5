@@ -55,7 +55,7 @@ export function calculateGalaxyRadius(
 }
 
 export function calculateBoundaryRadius(galaxyRadius: number): number {
-  return 300000;
+  return Math.max(galaxyRadius + 250000, 750000);
 }
 
 /**

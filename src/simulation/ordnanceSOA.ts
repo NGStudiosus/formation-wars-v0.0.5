@@ -14,7 +14,8 @@ export const ORDNANCE_STATUS = {
   GUIDED: 1 << 1,
   BURNING_OUT: 1 << 2,
   DETONATED: 1 << 3,
-  INTERCEPTED: 1 << 4
+  INTERCEPTED: 1 << 4,
+  GARN_LONG_RANGE: 1 << 5,
 } as const;
 
 export interface MissileStoreSOA {
@@ -226,7 +227,8 @@ export function spawnMissileSOA(
   targetShipIndex: number,
   sourceShipIndex: number,
   faction: number,
-  airframeClass: number
+  airframeClass: number,
+  isGarnLongRange: boolean = false
 ): number {
   if (m.activeCount >= m.capacity) return -1;
 
@@ -249,6 +251,9 @@ export function spawnMissileSOA(
   m.faction[idx] = faction;
   m.airframeClass[idx] = airframeClass;
   m.statusBitmask[idx] = ORDNANCE_STATUS.ACTIVE | ORDNANCE_STATUS.GUIDED;
+  if (isGarnLongRange) {
+    m.statusBitmask[idx] |= ORDNANCE_STATUS.GARN_LONG_RANGE;
+  }
 
   // Initialize ring buffer with initial point
   const trailOffset = idx * 32;
@@ -365,7 +370,11 @@ export function updateMissilesSOA(
 
       // Detonation threshold (proximity fuse: 40 units)
       if (dist < 40) {
-        onDetonate(i, ships[tIdx], damage[i]);
+        const isGarnLR = (statusBitmask[i] & ORDNANCE_STATUS.GARN_LONG_RANGE) !== 0;
+        // Long-range theater defense clamp: flat 5% hit probability
+        if (!isGarnLR || Math.random() < 0.05) {
+          onDetonate(i, ships[tIdx], damage[i]);
+        }
         removeMissileSOA(m, i);
         continue;
       }

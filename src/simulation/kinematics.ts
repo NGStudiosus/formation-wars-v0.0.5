@@ -87,6 +87,42 @@ export const SHIP_KINEMATICS: Record<string, ShipKinematicsSpec> = {
     acceleration: 80.0,
     angularSlewRate: 7.0,
   },
+  CITY_SHIP: {
+    role: 'CITY_SHIP',
+    navalAbbr: 'CS',
+    className: 'City Ship',
+    maxSpeed: 420.0,
+    cruiseSpeed: 280.0,
+    acceleration: 60.0,
+    angularSlewRate: 5.0,
+  },
+  LIAAL_LIGHT: {
+    role: 'LIAAL_LIGHT',
+    navalAbbr: 'L-WS',
+    className: 'Liaal Light Warship',
+    maxSpeed: 1600.0,
+    cruiseSpeed: 1100.0,
+    acceleration: 380.0,
+    angularSlewRate: 38.0,
+  },
+  LIAAL_MEDIUM: {
+    role: 'LIAAL_MEDIUM',
+    navalAbbr: 'M-WS',
+    className: 'Liaal Medium Warship',
+    maxSpeed: 1250.0,
+    cruiseSpeed: 850.0,
+    acceleration: 270.0,
+    angularSlewRate: 26.0,
+  },
+  LIAAL_HEAVY: {
+    role: 'LIAAL_HEAVY',
+    navalAbbr: 'H-WS',
+    className: 'Liaal Heavy Warship',
+    maxSpeed: 750.0,
+    cruiseSpeed: 500.0,
+    acceleration: 130.0,
+    angularSlewRate: 12.0,
+  },
   MINER: {
     role: 'MINER',
     navalAbbr: 'MINER',
@@ -173,6 +209,21 @@ export function getShipKinematics(roleOrKey: string): ShipKinematicsSpec {
     case 'DN':
     case 'DREADNOUGHT':
       return SHIP_KINEMATICS.DREADNOUGHT;
+    case 'CS':
+    case 'CITY_SHIP':
+      return SHIP_KINEMATICS.CITY_SHIP;
+    case 'LIAAL_LIGHT':
+    case 'L-WS':
+    case 'L_WS':
+      return SHIP_KINEMATICS.LIAAL_LIGHT;
+    case 'LIAAL_MEDIUM':
+    case 'M-WS':
+    case 'M_WS':
+      return SHIP_KINEMATICS.LIAAL_MEDIUM;
+    case 'LIAAL_HEAVY':
+    case 'H-WS':
+    case 'H_WS':
+      return SHIP_KINEMATICS.LIAAL_HEAVY;
     case 'MN':
     case 'MINER':
       return SHIP_KINEMATICS.MINER;

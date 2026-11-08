@@ -19,6 +19,7 @@ import {
   DiagnosticReport,
 } from '../simulation/tooltipResolver';
 import { ViewportTooltipPortal, TooltipProps } from './ViewportTooltipPortal';
+import { MetalIcon, OrganicsIcon, NeridiumIcon } from './ResourceIcons';
 
 export { ViewportTooltipPortal };
 export type { TooltipProps };
@@ -80,21 +81,33 @@ export const DiagnosticAlertBox: React.FC<DiagnosticAlertBoxProps> = ({ diagnost
 
 export interface TooltipCostSectionProps {
   diagnostics: DiagnosticReport;
-  costs: { metallic: number; organic: number };
+  costs: { metallic: number; organic: number; neridium?: number };
 }
 
 export const TooltipCostSection: React.FC<TooltipCostSectionProps> = ({ diagnostics, costs }) => (
   <div className="tooltip-cost-section mb-2.5">
     <div className="tooltip-cost-header">STOCKPILE COMMITMENT:</div>
     <div className="tooltip-cost-grid">
-      <span className={diagnostics.deficitM > 0 ? 'cost-deficit' : 'cost-satisfied'}>
-        METALLIC: {costs.metallic.toLocaleString()}
-        {diagnostics.deficitM > 0 && ` (SHORT -${Math.round(diagnostics.deficitM).toLocaleString()})`}
+      <span className={`flex items-center gap-1.5 ${diagnostics.deficitM > 0 ? 'cost-deficit' : 'cost-satisfied'}`}>
+        <MetalIcon className="w-3.5 h-3.5 flex-shrink-0" />
+        <span>MET: {costs.metallic.toLocaleString()}</span>
+        {diagnostics.deficitM > 0 && ` (-${Math.round(diagnostics.deficitM).toLocaleString()})`}
       </span>
-      <span className={diagnostics.deficitO > 0 ? 'cost-deficit' : 'cost-satisfied'}>
-        ORGANIC: {costs.organic.toLocaleString()}
-        {diagnostics.deficitO > 0 && ` (SHORT -${Math.round(diagnostics.deficitO).toLocaleString()})`}
+      <span className={`flex items-center gap-1.5 ${diagnostics.deficitO > 0 ? 'cost-deficit' : 'cost-satisfied'}`}>
+        <OrganicsIcon className="w-3.5 h-3.5 flex-shrink-0" />
+        <span>ORG: {costs.organic.toLocaleString()}</span>
+        {diagnostics.deficitO > 0 && ` (-${Math.round(diagnostics.deficitO).toLocaleString()})`}
       </span>
+      {((costs.neridium ?? 0) > 0 || (diagnostics.costNeridium ?? 0) > 0) && (
+        <span
+          className={`flex items-center gap-1.5 ${(diagnostics.deficitNeridium ?? 0) > 0 ? 'cost-deficit' : 'cost-satisfied'}`}
+          style={{ color: (diagnostics.deficitNeridium ?? 0) > 0 ? undefined : '#c084fc' }}
+        >
+          <NeridiumIcon className="w-3.5 h-3.5 flex-shrink-0" />
+          <span>NERIDIUM: {(costs.neridium ?? diagnostics.costNeridium ?? 0).toLocaleString()}</span>
+          {(diagnostics.deficitNeridium ?? 0) > 0 && ` (-${Math.round(diagnostics.deficitNeridium!).toLocaleString()})`}
+        </span>
+      )}
     </div>
   </div>
 );
@@ -178,6 +191,10 @@ export const CommandTooltipCard: React.FC<TacticalTooltipCardProps> = ({
         const reqOrg = diagnostic.costO || payload.organic || 0;
         const curOrg = hqResources.organic ?? 0;
         const deficitOrg = diagnostic.deficitO;
+
+        const reqNer = diagnostic.costNeridium || payload.neridiumCost || 0;
+        const curNer = (hqResources as any).neridium ?? 0;
+        const deficitNer = diagnostic.deficitNeridium ?? Math.max(0, reqNer - curNer);
 
         const tonnageClass = payload.tierCategory
           ? `${payload.tierCategory} CLASS HULL`
@@ -278,7 +295,7 @@ export const CommandTooltipCard: React.FC<TacticalTooltipCardProps> = ({
             {/* Stockpile Commitment Section */}
             <TooltipCostSection
               diagnostics={diagnostic}
-              costs={{ metallic: reqMet, organic: reqOrg }}
+              costs={{ metallic: reqMet, organic: reqOrg, neridium: reqNer }}
             />
 
             {/* 4. Cost & Stockpile Matrix */}
@@ -334,6 +351,30 @@ export const CommandTooltipCard: React.FC<TacticalTooltipCardProps> = ({
                   )}
                 </div>
               </div>
+
+              {/* Neridium (ships only) */}
+              {reqNer > 0 && (
+                <div className="flex justify-between items-center font-mono">
+                  <span className="text-slate-400 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-purple-400 inline-block" />
+                    Neridium Rare Byproduct:
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-slate-400">{reqNer.toLocaleString()}</span>
+                    <span className="text-slate-600">/</span>
+                    <span className={`font-bold ${deficitNer === 0 ? 'text-purple-300' : 'text-slate-300'}`}>
+                      {Math.round(curNer).toLocaleString()}
+                    </span>
+                    {deficitNer > 0 ? (
+                      <span className="text-rose-400 font-bold font-mono ml-1">
+                        (-{Math.round(deficitNer).toLocaleString()})
+                      </span>
+                    ) : (
+                      <span className="text-emerald-400 text-[9px] ml-1">[OK]</span>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Active Queue Construction Timer */}
@@ -734,6 +775,16 @@ export const CommandTooltipCard: React.FC<TacticalTooltipCardProps> = ({
         const hasOrganicDeficit = costO > hqResources.organic;
         const isInsufficient = hasMetallicDeficit || hasOrganicDeficit;
 
+        const isBranchBusy = Boolean(engine.researchManager.getActiveProject(node.branch));
+        const isQueued = engine.researchManager.isNodeQueued(node.id);
+        const qPos = engine.researchManager.getQueuePosition(node.id);
+
+        const durationSeconds = (node.totalTicks || 300) / 30.0;
+        const durationFormatted =
+          durationSeconds < 60
+            ? `${durationSeconds.toFixed(0)}s`
+            : `${Math.floor(durationSeconds / 60)}m ${Math.round(durationSeconds % 60)}s`;
+
         let statusText = '';
         let statusBadgeStyle = '';
         if (nodeState.status === 'COMPLETED') {
@@ -745,6 +796,9 @@ export const CommandTooltipCard: React.FC<TacticalTooltipCardProps> = ({
         } else if (nodeState.status === 'PAUSED_LACKING_CAPACITY') {
           statusText = isHQ ? 'PAUSED: INSUFFICIENT HQ RESEARCH TOKENS' : 'PAUSED: INSUFFICIENT RESEARCH STATIONS';
           statusBadgeStyle = 'text-amber-300 bg-amber-950/80 border-amber-500/60 animate-pulse';
+        } else if (isQueued) {
+          statusText = `QUEUED: SLOT #${qPos?.position || 1} IN ${node.branch} QUEUE [CLICK TO REMOVE]`;
+          statusBadgeStyle = 'text-amber-300 bg-amber-950/90 border-amber-400 font-bold animate-pulse';
         } else if (currentCapacity < requiredCapacity) {
           statusText = isHQ ? 'LOCKED: INSUFFICIENT HQ RESEARCH TOKENS' : 'LOCKED: INSUFFICIENT RESEARCH STATIONS';
           statusBadgeStyle = 'text-rose-400 bg-rose-950/80 border-rose-500/60';
@@ -752,8 +806,13 @@ export const CommandTooltipCard: React.FC<TacticalTooltipCardProps> = ({
           statusText = 'UNAVAILABLE: INSUFFICIENT MATERIALS';
           statusBadgeStyle = 'text-rose-400 bg-rose-950/90 border-rose-500 font-bold';
         } else if (nodeState.status === 'AVAILABLE') {
-          statusText = `CLICK TO COMMIT: -${costM.toLocaleString()} M / -${costO.toLocaleString()} O`;
-          statusBadgeStyle = 'text-emerald-300 bg-emerald-950/80 border-emerald-500/60 font-bold';
+          if (isBranchBusy) {
+            statusText = `CLICK TO ADD TO QUEUE (Deducts -${costM.toLocaleString()} M / -${costO.toLocaleString()} O when started)`;
+            statusBadgeStyle = 'text-amber-300 bg-amber-950/80 border-amber-500/60 font-bold';
+          } else {
+            statusText = `CLICK TO COMMIT: -${costM.toLocaleString()} M / -${costO.toLocaleString()} O`;
+            statusBadgeStyle = 'text-emerald-300 bg-emerald-950/80 border-emerald-500/60 font-bold';
+          }
         } else {
           statusText = nodeState.reason || 'LOCKED';
           statusBadgeStyle = 'text-rose-400 bg-rose-950/80 border-rose-500/60';
@@ -767,11 +826,16 @@ export const CommandTooltipCard: React.FC<TacticalTooltipCardProps> = ({
                 <span className="font-bold tracking-wider">
                   {branchTitle} // TIER {ROMAN_NUMERALS[node.tier - 1] || node.tier}
                 </span>
-                <span className="text-slate-400 font-normal">{node.code}</span>
+                <span className="text-amber-300 font-mono font-bold bg-slate-900 px-1.5 py-0.2 rounded border border-slate-700 text-[9px]">
+                  ⏱️ {durationFormatted}
+                </span>
               </div>
-              <h4 className="font-bold text-slate-100 text-sm tracking-wide leading-tight">
-                {node.name}
-              </h4>
+              <div className="flex items-center justify-between gap-1">
+                <h4 className="font-bold text-slate-100 text-sm tracking-wide leading-tight">
+                  {node.name}
+                </h4>
+                <span className="text-slate-400 font-normal text-[10px]">{node.code}</span>
+              </div>
             </div>
 
             {/* Station / Token Prerequisites */}

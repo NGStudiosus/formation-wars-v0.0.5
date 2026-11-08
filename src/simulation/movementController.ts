@@ -90,7 +90,7 @@ export function issueMoveCommand(
   targetPos: Vec2D,
   commandedSpeed?: number
 ): void {
-  if (!ship || ship.hullState === 'DESTROYED' || ship.isStationary) return;
+  if (!ship || ship.hullState === 'DESTROYED' || ship.hullState === 'DISABLED' || ship.isStationary) return;
 
   // Release docking station-keeping if explicit new flight order is issued
   if (ship.isStationKeeping) {
@@ -105,7 +105,15 @@ export function issueMoveCommand(
     ship.waypoints.length = 0;
   }
 
-  const speedLimit = commandedSpeed !== undefined ? commandedSpeed : (ship.maxSpeed || 1000.0);
+  let speedLimit = commandedSpeed !== undefined ? commandedSpeed : (ship.maxSpeed || 1000.0);
+  if (ship.hullState === 'CRIPPLED') {
+    const crippleMax = ship.crippleBarMax || (0.25 * ship.hullMax);
+    const rCripple = Math.max(0.5, Math.min(1.0, (ship.hullHp || 0) / Math.max(1, crippleMax)));
+    const t = (1.0 - rCripple) / 0.5; // 0.0 at 100% cripple -> 1.0 at 50% cripple
+    const speedMult = Math.max(0.05, 0.90 - t * 0.90);
+    speedLimit *= speedMult;
+  }
+
   ship.commandedSpeed = speedLimit;
 
   const cruiseSpeed = ship.cruiseSpeed || (ship.maxSpeed ? ship.maxSpeed * 0.7 : 700.0);
@@ -150,7 +158,9 @@ export function updateShipMovementTick(
   if (
     ship.jumpState === 'SPOOLING' ||
     ship.jumpState === 'IN_TRANSIT' ||
-    ship.jumpState === 'TRANSIT'
+    ship.jumpState === 'TRANSIT' ||
+    ship.microJumpState === 'SPOOLING' ||
+    ship.microJumpState === 'IN_TRANSIT'
   ) {
     return false;
   }
@@ -169,7 +179,12 @@ export function updateShipMovementTick(
     return false;
   }
 
-  if (!ship.splineActive || ship.hullState === 'DESTROYED' || ship.isStationary) {
+  if (!ship.splineActive || ship.hullState === 'DESTROYED' || ship.hullState === 'DISABLED' || ship.isStationary) {
+    if (ship.hullState === 'DISABLED') {
+      clearShipMovement(ship);
+      ship.velocity.x = 0;
+      ship.velocity.y = 0;
+    }
     return false;
   }
 
@@ -194,9 +209,19 @@ export function updateShipMovementTick(
     ship.splineC2 = traj.c2;
   }
 
-  const accel = ship.acceleration ?? 250.0;
-  const aBrake = accel;
-  const maxSpd = ship.commandedSpeed ?? ship.maxSpeed ?? 1000.0;
+  // Cripple Speed Penalty:
+  // At 100% cripple bar (25% max HP): 10% speed degradation (0.90x).
+  // As cripple reaches 50% (12.5% max HP / disabled threshold), slows to halt.
+  let speedPenaltyMult = 1.0;
+  if (ship.hullState === 'CRIPPLED') {
+    const crippleRatio = Math.max(0, Math.min(1.0, ship.hullHp / (0.25 * ship.hullMax)));
+    speedPenaltyMult = Math.max(0, (crippleRatio - 0.5) / 0.5 * 0.90);
+  }
+
+  const accel = (ship.acceleration ?? 250.0) * speedPenaltyMult;
+  const aBrake = accel > 0 ? accel : 250.0;
+  const rawMaxSpd = ship.commandedSpeed ?? ship.maxSpeed ?? 1000.0;
+  const maxSpd = rawMaxSpd * speedPenaltyMult;
   const curSpeed = Math.hypot(ship.velocity.x, ship.velocity.y);
 
   // Direct Euclidean distance to destination
@@ -245,10 +270,20 @@ export function updateShipMovementTick(
   }
 
   // 3. ADVANCE TRAJECTORY PARAMETER t & COMPUTE SPLINE DERIVATIVE
-  const deriv = evaluateCubicBezierDerivative(traj.c0, traj.c1, traj.c2, traj.c3, ship.splineT);
-  const tangentSpeed = Math.hypot(deriv.x, deriv.y);
+  const t = ship.splineT;
+  const oneMinusT = 1.0 - t;
+  const mt2 = oneMinusT * oneMinusT;
+  const t2 = t * t;
+  const c0 = traj.c0;
+  const c1 = traj.c1;
+  const c2 = traj.c2;
+  const c3 = traj.c3;
+
+  const derivX = 3.0 * mt2 * (c1.x - c0.x) + 6.0 * oneMinusT * t * (c2.x - c1.x) + 3.0 * t2 * (c3.x - c2.x);
+  const derivY = 3.0 * mt2 * (c1.y - c0.y) + 6.0 * oneMinusT * t * (c2.y - c1.y) + 3.0 * t2 * (c3.y - c2.y);
+  const tangentSpeed = Math.hypot(derivX, derivY);
   const dtParam = (newSpeed * dt) / Math.max(tangentSpeed, 1.0);
-  const nextT = Math.min(1.0, ship.splineT + dtParam);
+  const nextT = Math.min(1.0, t + dtParam);
 
   if (nextT >= 1.0) {
     // Curve completed: halt dead stop at destination
@@ -270,13 +305,18 @@ export function updateShipMovementTick(
   }
 
   // 4. UPDATE POSITION ALONG CUBIC HERMITE/BEZIER CURVE
-  const nextPos = evaluateCubicBezier(traj.c0, traj.c1, traj.c2, traj.c3, nextT);
-  ship.pos.x = nextPos.x;
-  ship.pos.y = nextPos.y;
+  const nOneMinusT = 1.0 - nextT;
+  const nMt2 = nOneMinusT * nOneMinusT;
+  const nMt3 = nMt2 * nOneMinusT;
+  const nT2 = nextT * nextT;
+  const nT3 = nT2 * nextT;
+
+  ship.pos.x = nMt3 * c0.x + 3.0 * nMt2 * nextT * c1.x + 3.0 * nOneMinusT * nT2 * c2.x + nT3 * c3.x;
+  ship.pos.y = nMt3 * c0.y + 3.0 * nMt2 * nextT * c1.y + 3.0 * nOneMinusT * nT2 * c2.y + nT3 * c3.y;
   ship.splineT = nextT;
 
   // 5. ORIENTATION & VELOCITY VECTOR ALIGNMENT
-  const targetAngle = Math.atan2(deriv.y, deriv.x);
+  const targetAngle = Math.atan2(derivY, derivX);
   const maxSlewRateRad = ((ship.angularSlewRate ?? 25.0) * Math.PI) / 180.0;
   ship.heading = clampAngularSlew(ship.heading, targetAngle, maxSlewRateRad, dt);
 
@@ -310,7 +350,9 @@ export function checkSublightPerimeterInterdiction(
     ship.jumpState === 'IN_TRANSIT' ||
     ship.jumpState === 'TRANSIT' ||
     ship.jumpState === 'SPOOLING' ||
-    ship.jumpState === 'EMERGING'
+    ship.jumpState === 'EMERGING' ||
+    ship.microJumpState === 'IN_TRANSIT' ||
+    ship.microJumpState === 'SPOOLING'
   ) {
     return false;
   }
@@ -353,4 +395,124 @@ export function checkSublightPerimeterInterdiction(
 }
 
 export { steerTowards, updateInnerPlanetaryPatrol } from './pirates';
+
+/**
+ * Novan Tactical Micro-Jump Initiation
+ * Spools the hyper-velocity micro-jump drive towards target coordinates.
+ */
+export function initiateMicroJump(
+  ship: ShipEntity,
+  targetCoords: Vec2D,
+  isNovan: boolean = true
+): { success: boolean; reason?: string } {
+  if (!ship || ship.hullState === 'DESTROYED') {
+    return { success: false, reason: 'VESSEL DESTROYED' };
+  }
+
+  if (ship.microJumpState && ship.microJumpState !== 'IDLE') {
+    return { success: false, reason: `JUMP DRIVE BUSY (${ship.microJumpState})` };
+  }
+
+  const shipX = ship.pos?.x ?? ship.x ?? 0;
+  const shipY = ship.pos?.y ?? ship.y ?? 0;
+  const dx = targetCoords.x - shipX;
+  const dy = targetCoords.y - shipY;
+  const dist = Math.hypot(dx, dy);
+
+  const MIN_JUMP_DIST = 2500; // km
+  if (dist < MIN_JUMP_DIST) {
+    return {
+      success: false,
+      reason: `TARGET BELOW MINIMUM DISTANCE THRESHOLD (${Math.round(dist)}km < ${MIN_JUMP_DIST}km)`,
+    };
+  }
+
+  // Calculate destination with Novan scatter factor (75km radius) vs standard (1200km radius)
+  const scatterRadius = isNovan ? 75 : 1200;
+  const scatterAngle = Math.random() * Math.PI * 2;
+  const scatterDist = Math.random() * scatterRadius;
+  const destX = targetCoords.x + Math.cos(scatterAngle) * scatterDist;
+  const destY = targetCoords.y + Math.sin(scatterAngle) * scatterDist;
+
+  ship.microJumpTarget = { x: destX, y: destY };
+  ship.microJumpState = 'SPOOLING';
+  ship.microJumpSpoolRemaining = isNovan ? 105 : 360; // 3.5s (105 ticks) vs 12.0s (360 ticks) at 30 ticks/sec
+
+  // Halt conventional engines during spool-up
+  ship.splineActive = false;
+  ship.velocity.x = 0;
+  ship.velocity.y = 0;
+
+  return { success: true };
+}
+
+/**
+ * Novan Tactical Micro-Jump Kinematic Evolution (30Hz evaluation)
+ */
+export function updateMicroJumpKinematics(ship: ShipEntity, dtTicks: number = 1): void {
+  if (!ship.microJumpState || ship.microJumpState === 'IDLE') return;
+
+  // 1. SPOOLING Phase
+  if (ship.microJumpState === 'SPOOLING') {
+    ship.microJumpSpoolRemaining = (ship.microJumpSpoolRemaining ?? 105) - dtTicks;
+    if (ship.microJumpSpoolRemaining <= 0) {
+      ship.microJumpState = 'IN_TRANSIT';
+    }
+    return;
+  }
+
+  // 2. IN_TRANSIT Phase
+  if (ship.microJumpState === 'IN_TRANSIT') {
+    if (!ship.microJumpTarget) {
+      ship.microJumpState = 'COOLDOWN';
+      ship.microJumpCooldownRemaining = 480;
+      return;
+    }
+
+    const shipX = ship.pos?.x ?? ship.x ?? 0;
+    const shipY = ship.pos?.y ?? ship.y ?? 0;
+    const tx = ship.microJumpTarget.x;
+    const ty = ship.microJumpTarget.y;
+    const dx = tx - shipX;
+    const dy = ty - shipY;
+    const dist = Math.hypot(dx, dy);
+
+    // Speed: 65,000 km/s -> at 30 ticks/sec, dist per tick = 65000 / 30 = 2166.67 km
+    const stepDist = (65000 / 30) * dtTicks;
+
+    if (dist <= stepDist) {
+      // Arrived at destination boundary: Snap coordinates, transition to COOLDOWN
+      if (ship.pos) {
+        ship.pos.x = tx;
+        ship.pos.y = ty;
+      }
+      ship.x = tx;
+      ship.y = ty;
+      ship.velocity.x = 0;
+      ship.velocity.y = 0;
+      ship.microJumpState = 'COOLDOWN';
+      ship.microJumpCooldownRemaining = 480; // 16.0s at 30 ticks/sec (16 * 30)
+      ship.microJumpTarget = undefined;
+    } else {
+      const moveX = (dx / dist) * stepDist;
+      const moveY = (dy / dist) * stepDist;
+      if (ship.pos) {
+        ship.pos.x += moveX;
+        ship.pos.y += moveY;
+      }
+      ship.x = (ship.x ?? shipX) + moveX;
+      ship.y = (ship.y ?? shipY) + moveY;
+    }
+    return;
+  }
+
+  // 3. COOLDOWN Phase
+  if (ship.microJumpState === 'COOLDOWN') {
+    ship.microJumpCooldownRemaining = (ship.microJumpCooldownRemaining ?? 480) - dtTicks;
+    if (ship.microJumpCooldownRemaining <= 0) {
+      ship.microJumpState = 'IDLE';
+    }
+  }
+}
+
 

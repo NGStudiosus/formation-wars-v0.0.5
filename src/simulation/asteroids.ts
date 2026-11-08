@@ -7,6 +7,44 @@ import { AsteroidEntity, AsteroidTier, Vec2D } from '../types';
  * - Large Asteroid (15% spawn chance): 1,500 ore capacity, radius 32-38px
  */
 
+/**
+ * Procedural faceted polygon & crater generator for asteroids
+ */
+export function generateAsteroidFacets(
+  radius: number,
+  seedStr?: string
+): { vertices: Vec2D[]; craters: { x: number; y: number; r: number }[] } {
+  const vertexCount = radius < 80 ? 8 : radius < 180 ? 10 : 13;
+  const hash = seedStr
+    ? seedStr.split('').reduce((acc, char, idx) => acc + char.charCodeAt(0) * (idx + 1) * 31, 0)
+    : Math.random() * 10000;
+
+  const vertices: Vec2D[] = [];
+  for (let i = 0; i < vertexCount; i++) {
+    const angle = (i / vertexCount) * Math.PI * 2 + Math.sin(hash + i * 1.7) * (Math.PI / vertexCount * 0.4);
+    const noise = 0.72 + (Math.cos(hash + i * 2.3) * 0.5 + 0.5) * 0.56;
+    const rad = radius * noise;
+    vertices.push({
+      x: Math.cos(angle) * rad,
+      y: Math.sin(angle) * rad,
+    });
+  }
+
+  const craters: { x: number; y: number; r: number }[] = [];
+  const craterCount = Math.floor(Math.abs(Math.sin(hash)) * 3) + 2;
+  for (let i = 0; i < craterCount; i++) {
+    const cDist = Math.abs(Math.cos(hash + i * 1.4)) * (radius * 0.52);
+    const cAngle = (hash * 0.3 + i * 1.9) % (Math.PI * 2);
+    craters.push({
+      x: Math.cos(cAngle) * cDist,
+      y: Math.sin(cAngle) * cDist,
+      r: radius * 0.12 + Math.abs(Math.sin(hash * 2 + i)) * (radius * 0.18),
+    });
+  }
+
+  return { vertices, craters };
+}
+
 export function createAsteroid(id: string, pos: Vec2D, forcedTier?: AsteroidTier): AsteroidEntity {
   let tier: AsteroidTier = forcedTier || 'SMALL';
   if (!forcedTier) {

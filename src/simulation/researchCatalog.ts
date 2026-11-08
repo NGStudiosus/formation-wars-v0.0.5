@@ -26,7 +26,8 @@ export type TechNodeStatus =
   | 'RESEARCHING'
   | 'PAUSED_LACKING_CAPACITY'
   | 'COMPLETED'
-  | 'UNAVAILABLE';
+  | 'UNAVAILABLE'
+  | 'QUEUED';
 
 export interface ActiveResearchProject {
   nodeId: string;
@@ -74,6 +75,14 @@ export const HULL_UNLOCK_REQUIREMENTS: Record<string, string> = {
   BB: 'mil-t8',
   DREADNOUGHT: 'mil-t10',
   DN: 'mil-t10',
+  CITY_SHIP: 'mil-t10',
+  CS: 'mil-t10',
+  LIAAL_LIGHT: 'mil-t1',
+  'L-WS': 'mil-t1',
+  LIAAL_MEDIUM: 'mil-t4',
+  'M-WS': 'mil-t4',
+  LIAAL_HEAVY: 'mil-t8',
+  'H-WS': 'mil-t8',
 };
 
 /**
@@ -1741,7 +1750,21 @@ export const TECH_CATALOG: TechNodeDefinition[] = [
     prereqs: ['HQ_SILO_T9'],
   },
 
-  // --- MODULAR REFINERY TRACKS (Tiers 2, 4, 6, 8, 10, Slot 1) ---
+  // --- MODULAR REFINERY TRACKS (Tiers 2, 4, 6, 8, 10, Slot 1) & TIER 1 BUILDINGS EXPANSION ---
+  {
+    id: 'HQ_BUILDINGS_EXPANSION',
+    branch: 'HEADQUARTERS',
+    tier: 1,
+    name: 'Buildings Expansion',
+    code: 'HQ-BLD-EXP',
+    slot: 1,
+    description: 'Structural outrigger docking rings mounted on the Yestiri City Ship HQ hull, expanding research orbital module capacity by 3 (up to 6 total).',
+    effects: '+3 Research Orbital Pod Capacity on City Ship HQ (Max 6 pods).',
+    costMetallic: 6000,
+    costOrganic: 3000,
+    totalTicks: 300,
+    prereqs: [],
+  },
   {
     id: 'HQ_REF_T2',
     branch: 'HEADQUARTERS',
@@ -1933,8 +1956,12 @@ export function isStructureUnlocked(
   structureType: StructureType,
   completedTechs: Set<string>
 ): boolean {
-  if (structureType === 'PD_PLATFORM' || structureType === 'MISSILE_BATTERY') {
-    return completedTechs.has('mil-t1-defgrid') || completedTechs.has('mil-t1');
+  if (
+    structureType === 'PD_PLATFORM' ||
+    structureType === 'MISSILE_BATTERY' ||
+    structureType === 'GARN_MISSILE_POD'
+  ) {
+    return completedTechs.has('mil-t1-defgrid') || completedTechs.has('mil-t1') || completedTechs.has('mil-t2');
   }
   if (structureType === 'ORBITAL_REFINERY') {
     return completedTechs.has('civ-t2');
@@ -1967,11 +1994,37 @@ export function isStructureUnlocked(
   return true;
 }
 
-// Normalize alias fields and deeply freeze each node definition
+/**
+ * Calculates deterministic synthesis ticks for research nodes based on tier.
+ * Baseline: Tier 1 = 10.0 seconds (300 ticks at 30Hz)
+ * Median: Tier 10 = ~300.0 seconds (9,000 ticks at 30Hz)
+ */
+export function getDefaultTierTicks(tier: number, isCapstone: boolean = false): number {
+  switch (tier) {
+    case 1: return 300;   // 10.0s (Tier 1 baseline)
+    case 2: return 750;   // 25.0s
+    case 3: return 1350;  // 45.0s
+    case 4: return 2250;  // 75.0s
+    case 5: return 3300;  // 110.0s
+    case 6: return 4650;  // 155.0s
+    case 7: return 6000;  // 200.0s
+    case 8: return 7350;  // 245.0s
+    case 9: return 8400;  // 280.0s
+    case 10: return isCapstone ? 9450 : 8850; // 315.0s for capstone super-flagships/citadels, 295.0s standard (~300.0s median)
+    default: return 300;
+  }
+}
+
+// Normalize alias fields, calculate tier-scaled deterministic research ticks, and deeply freeze each node definition
 for (let i = 0; i < TECH_CATALOG.length; i++) {
   const node = TECH_CATALOG[i];
   node.costM = node.costMetallic;
   node.costO = node.costOrganic;
+  const isCapstone = node.tier === 10 && (
+    node.id === 'mil-t10' || node.id === 'mil-t10-carrier' ||
+    node.id === 'civ-t10' || node.id === 'exp-t10'
+  );
+  node.totalTicks = getDefaultTierTicks(node.tier, isCapstone);
   node.researchTicks = node.totalTicks;
   Object.freeze(node);
 }
@@ -2082,10 +2135,164 @@ export function getNodePrereqs(nodeId: string): readonly string[] {
 }
 
 /**
- * O(1) direct lookup for tech definition by ID
+ * O(1) direct lookup for tech definition by ID with optional faction context
  */
-export function getNode(nodeId: string): TechNodeDefinition | undefined {
+export function getNode(nodeId: string, faction?: string): TechNodeDefinition | undefined {
+  if (faction && faction !== 'NOVAN') {
+    const catalog = getFactionTechCatalog(faction as any);
+    const found = catalog.find(n => n.id === nodeId);
+    if (found) return found;
+  }
   return RESEARCH_CATALOG[nodeId];
 }
+
+/**
+ * Builds a faction-diverged technology catalog respecting lore, specialty, and balance
+ */
+export function getFactionTechCatalog(faction: string = 'NOVAN'): TechNodeDefinition[] {
+  if (!faction || faction === 'NOVAN') {
+    return TECH_CATALOG;
+  }
+
+  const facNorm = faction.toUpperCase();
+
+  return TECH_CATALOG.map((baseNode) => {
+    const node: TechNodeDefinition = { ...baseNode };
+
+    if (facNorm === 'GARN') {
+      // Garn Hegemony: Fortress bastions, +65% armor, +35% shields, +50% metallic, -20% organic
+      node.costMetallic = Math.round(node.costMetallic * 1.50);
+      node.costOrganic = Math.round(node.costOrganic * 0.80);
+      if (node.id === 'mil-t1') {
+        node.name = 'Garn Escort & Line Battery Clearance';
+        node.description = 'Heavily armored line escort chassis and integrated point-defense missile telemetry.';
+      } else if (node.id === 'mil-t1-armor' || node.id === 'mil-t2-bulkhead' || node.id === 'mil-t4-armor' || node.id === 'mil-t8-armor') {
+        node.name = `Garn Bastion Plate ${node.tier > 1 ? `Mark ${node.tier}` : 'Alpha'}`;
+        node.effects = 'Passive Composite Armor HP +15% and Point-Defense Interception +5%';
+      } else if (node.id === 'mil-t1-defgrid' || node.id === 'exp-t6') {
+        node.name = 'Garn Theater Fortress Bastion Array';
+        node.description = 'Extreme-range missile defense grid with over-the-horizon active radar lock telemetry.';
+      } else if (node.id === 'mil-t10') {
+        node.name = 'Garn Citadel Dreadnought Blueprint';
+        node.description = 'Impenetrable fortress dreadnought with massive kinetic siege batteries and heavy barrier shields.';
+      }
+    } else if (facNorm === 'ALDONAH') {
+      // Alondahan Monarchy: Slab armor, brawler close-quarters, +50% refinery conversion, -10% metallic, +20% organic
+      node.costMetallic = Math.round(node.costMetallic * 0.90);
+      node.costOrganic = Math.round(node.costOrganic * 1.20);
+      if (node.id === 'civ-t1-smelt' || node.id === 'civ-t2' || node.id === 'civ-t4-refine' || node.id === 'civ-t6-slag') {
+        node.name = `Alondahan Superheated Crucible ${node.tier > 1 ? `Tier ${node.tier}` : 'Alpha'}`;
+        node.effects = 'Refinery Ore Conversion Throughput +50% and Smelting Heat Tolerance';
+      } else if (node.id === 'mil-t1-armor' || node.id === 'mil-t3-citadel' || node.id === 'mil-t7-armor') {
+        node.name = `Alondahan Slab Armor Laminate Tier ${node.tier}`;
+        node.effects = 'Armor Hit Points +20% and Flat Kinetic/Thermal Mitigation +10%';
+      } else if (node.id === 'mil-t1') {
+        node.name = 'Alondahan Brawler Line Escort Authorization';
+      }
+    } else if (facNorm === 'YESTIRI') {
+      // Yestiri Sodality: Ring-ships, +40% resonant shields, +20% beam range, no frigates, DD unlocked at baseline
+      if (node.id === 'mil-t1') {
+        node.name = 'Yestiri Destroyer Hull (Baseline Active)';
+        node.description = 'Annular ring chassis with open center; foundational escort ship already commissioned at baseline.';
+        node.effects = 'Immediate Baseline Access to DD Class Destroyer Ring Hull.';
+      } else if (node.id === 'mil-t1-shield' || node.id === 'mil-t3-shield' || node.id === 'mil-t5-barrier' || node.id === 'mil-t9-shield') {
+        node.name = `Annular Resonant Shield Matrix ${node.tier}`;
+        node.effects = 'Resonant Barrier Shield Capacity +25% and Harmonic Distortion Field';
+      } else if (node.id === 'mil-t10') {
+        node.name = 'Yestiri City-Ship Civilization Citadel Protocol';
+        node.description = 'Self-contained mobile biosphere and supreme flagship constructed with 100 Neridium.';
+      }
+    } else if (facNorm === 'LIAAL') {
+      // Liaal Consortium: Proxy buy powers, 3 fragile warships (20/45/100 salvo), 2x cargo, 2.5x freighters, 30% terraforming discount
+      if (node.id === 'mil-t1') {
+        node.name = 'L-WS Light Warship & Proxy Procurement Network';
+        node.effects = 'Unlocks Light Warship (20-Missile Salvo) + Proxy Commissioning of Allied Hulls.';
+      } else if (node.id === 'mil-t4') {
+        node.name = 'M-WS Medium Warship 45-Salvo Battery';
+        node.effects = 'Unlocks Medium Warship (45-Missile Salvo) and Allied Cruiser Proxy Licensing.';
+      } else if (node.id === 'mil-t8') {
+        node.name = 'H-WS Heavy Warship 100-Salvo Titan';
+        node.effects = 'Unlocks Heavy Warship (100-Missile Salvo) and Allied Capital Proxy Licensing.';
+      } else if (node.id === 'civ-t1' || node.id === 'civ-t3' || node.id === 'civ-t5' || node.id === 'civ-t7' || node.id === 'civ-t9') {
+        node.name = `Liaal Planetary Bio-Dome & Logistics Array ${node.tier}`;
+        node.effects = 'Colony Growth +50%, Cargo Capacity +100%, and Terraforming Cost Discount -30%';
+      }
+    } else if (facNorm === 'KOVAK') {
+      // Kovak Enclave: Volume over quality, 50% cost & build times, 40% durability, +10% swarm velocity
+      node.costMetallic = Math.max(50, Math.round(node.costMetallic * 0.50));
+      node.costOrganic = Math.max(20, Math.round(node.costOrganic * 0.50));
+      node.totalTicks = Math.max(100, Math.round(node.totalTicks * 0.50));
+      if (node.id === 'mil-t1') {
+        node.name = 'Kovak Swarm Frigate Rapid-Printing Matrix';
+        node.description = 'Angular rhomboid mass-fabrication templates for rapid swarm deployment at half resource cost.';
+      } else if (node.id === 'mil-t1-thruster' || node.id === 'mil-t3-maneuver' || node.id === 'mil-t5-prop' || node.id === 'mil-t7-vector') {
+        node.name = `Kovak Swarm Overdrive Thruster ${node.tier}`;
+        node.effects = 'Swarm Sublight Velocity +15% and Acceleration Curves +20%';
+      } else if (node.id === 'civ-t1' || node.id === 'civ-t4' || node.id === 'civ-t8') {
+        node.name = `Mass-Fabrication Nano-Forge Tier ${node.tier}`;
+        node.effects = 'Universal Hull Fabrication Time -50% and Strategic Material Consumption Halved';
+      }
+    }
+
+    node.costM = node.costMetallic;
+    node.costO = node.costOrganic;
+    node.researchTicks = node.totalTicks;
+
+    return node;
+  });
+}
+
+/**
+ * Precomputed, immutable faction-aware branch grids for zero-allocation UI rendering
+ */
+const FACTION_BRANCH_GRIDS_CACHE = new Map<string, Record<ResearchBranch, readonly (readonly (TechNodeDefinition | null)[])[]>>();
+
+export function getBranchGridForFaction(
+  branch: ResearchBranch,
+  faction: string = 'NOVAN'
+): readonly (readonly (TechNodeDefinition | null)[])[] {
+  const facKey = (faction || 'NOVAN').toUpperCase();
+  if (facKey === 'NOVAN') {
+    return STATIC_BRANCH_GRIDS[branch];
+  }
+
+  let grids = FACTION_BRANCH_GRIDS_CACHE.get(facKey);
+  if (!grids) {
+    const catalog = getFactionTechCatalog(facKey);
+    const buildGridForCatalog = (b: ResearchBranch) => {
+      const grid: (TechNodeDefinition | null)[][] = Array.from({ length: 10 }, () => [
+        null,
+        null,
+        null,
+        null,
+      ]);
+      const branchNodes = catalog.filter((n) => n.branch === b).sort((x, y) => x.tier - y.tier);
+      const tierCounts = new Array(10).fill(0);
+      for (const node of branchNodes) {
+        const tierIdx = Math.max(0, Math.min(9, node.tier - 1));
+        const slotIdx = node.slot !== undefined ? node.slot : tierCounts[tierIdx];
+        if (slotIdx >= 0 && slotIdx < 4) {
+          grid[tierIdx][slotIdx] = node;
+          tierCounts[tierIdx] = Math.max(tierCounts[tierIdx], slotIdx + 1);
+        }
+      }
+      for (let t = 0; t < 10; t++) {
+        Object.freeze(grid[t]);
+      }
+      return Object.freeze(grid);
+    };
+
+    grids = {
+      MILITARY: buildGridForCatalog('MILITARY'),
+      CIVILIAN: buildGridForCatalog('CIVILIAN'),
+      EXPANSION: buildGridForCatalog('EXPANSION'),
+      HEADQUARTERS: buildGridForCatalog('HEADQUARTERS'),
+    };
+    FACTION_BRANCH_GRIDS_CACHE.set(facKey, grids);
+  }
+
+  return grids[branch];
+}
+
 
 

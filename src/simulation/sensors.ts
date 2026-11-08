@@ -66,6 +66,8 @@ export function getBaseRadarRadius(entity: any): number {
     role === 'BATTLECRUISER' ||
     role === 'BATTLESHIP' ||
     role === 'DREADNOUGHT' ||
+    role === 'CITY_SHIP' ||
+    role === 'CS' ||
     role === 'BASTION' ||
     role === 'CV' ||
     role === 'CVF' ||
@@ -95,13 +97,36 @@ export function getBaseRadarRadius(entity: any): number {
   return 6000;
 }
 
+interface SensorEmitterData {
+  x: number;
+  y: number;
+  radarR: number;
+  passiveR: number;
+  systemId?: string;
+}
+
+const STATIC_EMITTERS_POOL: SensorEmitterData[] = [];
+
 export function updateSensorVisibility(state: GameState | any): void {
   if (!state || !state.ships) return;
 
   const passiveMult = state.modifiers?.passiveMultiplier || 1.0;
   const radarMult = state.modifiers?.radarMultiplier || 1.0;
 
-  const playerEmitters: { x: number; y: number; radarR: number; passiveR: number; systemId?: string }[] = [];
+  let emitterCount = 0;
+  const setEmitter = (x: number, y: number, radarR: number, passiveR: number, systemId?: string) => {
+    if (emitterCount < STATIC_EMITTERS_POOL.length) {
+      const em = STATIC_EMITTERS_POOL[emitterCount];
+      em.x = x;
+      em.y = y;
+      em.radarR = radarR;
+      em.passiveR = passiveR;
+      em.systemId = systemId;
+    } else {
+      STATIC_EMITTERS_POOL.push({ x, y, radarR, passiveR, systemId });
+    }
+    emitterCount++;
+  };
 
   // 1. HQ Station Emitter
   const hq = state.hq ?? (typeof state.getHQ === 'function' ? state.getHQ() : undefined) ??
@@ -124,30 +149,26 @@ export function updateSensorVisibility(state: GameState | any): void {
     hq.passiveRadius = passiveSensorR;
     hq.passiveRange = passiveSensorR;
 
-    playerEmitters.push({
-      x: hqX,
-      y: hqY,
-      radarR: activeRadarR,
-      passiveR: passiveSensorR,
-      systemId: hq.systemId,
-    });
+    setEmitter(hqX, hqY, activeRadarR, passiveSensorR, hq.systemId);
   }
 
-  // 2. Allied Ships & Platforms
-  for (let i = 0; i < state.ships.length; i++) {
-    const s = state.ships[i];
+  // 2. Allied Ships, Platforms & Structures
+  const ships = state.ships;
+  const shipsLen = ships.length;
+  for (let i = 0; i < shipsLen; i++) {
+    const s = ships[i];
     if (!s || s.hullState === 'DESTROYED') continue;
     if (hqId && s.id === hqId) continue; // Already added as HQ emitter
 
-    // Synchronize coordinates
+    // Synchronize coordinates prioritizing live pos vector
     if (s.pos) {
-      if (s.x === undefined) s.x = s.pos.x;
-      if (s.y === undefined) s.y = s.pos.y;
+      s.x = s.pos.x;
+      s.y = s.pos.y;
     } else if (s.x !== undefined && s.y !== undefined) {
       s.pos = { x: s.x, y: s.y };
     }
 
-    const isAllied = s.faction === 'PLAYER' || s.faction === 'PLAYER_MINER' || s.faction === 'FRIENDLY';
+    const isAllied = s.faction === 'PLAYER' || s.faction === 'PLAYER_MINER' || s.faction === 'FRIENDLY' || !s.faction;
     if (isAllied) {
       const baseRadar = s.baseRadar || getBaseRadarRadius(s);
       const { activeRadarR, passiveSensorR } = calculateEntitySensors(baseRadar, {
@@ -161,78 +182,69 @@ export function updateSensorVisibility(state: GameState | any): void {
       s.passiveRadius = passiveSensorR;
       s.passiveRange = passiveSensorR;
 
-      playerEmitters.push({
-        x: s.x ?? s.pos?.x ?? 0,
-        y: s.y ?? s.pos?.y ?? 0,
-        radarR: activeRadarR,
-        passiveR: passiveSensorR,
-        systemId: s.systemId,
-      });
-    }
-  }
-
-  // 2B. Allied Structures (Sensor Relays, Defense Platforms, Refineries)
-  if (Array.isArray(state.structures)) {
-    for (let i = 0; i < state.structures.length; i++) {
-      const st = state.structures[i];
-      if (!st || st.hullState === 'DESTROYED') continue;
-      const isAllied = !st.faction || st.faction === 'PLAYER' || st.faction === 'FRIENDLY';
-      if (isAllied) {
-        const baseRadar = st.type === 'OUTPOST' || st.type === 'SENSOR_RELAY' ? 16000 : 8000;
-        const { activeRadarR, passiveSensorR } = calculateEntitySensors(baseRadar, {
-          radarMultiplier: radarMult,
-          passiveMultiplier: passiveMult,
-        });
-        st.radarRadius = activeRadarR;
-        st.passiveRadius = passiveSensorR;
-
-        playerEmitters.push({
-          x: st.pos?.x ?? st.x ?? 0,
-          y: st.pos?.y ?? st.y ?? 0,
-          radarR: activeRadarR,
-          passiveR: passiveSensorR,
-          systemId: st.systemId,
-        });
-      }
+      setEmitter(
+        s.pos?.x ?? s.x ?? 0,
+        s.pos?.y ?? s.y ?? 0,
+        activeRadarR,
+        passiveSensorR,
+        s.systemId
+      );
     }
   }
 
   // 3. Evaluate non-allied entities
-  for (let i = 0; i < state.ships.length; i++) {
-    const target = state.ships[i];
-    if (!target) continue;
-
-    const isAllied = target.faction === 'PLAYER' || target.faction === 'PLAYER_MINER' || target.faction === 'FRIENDLY';
-    if (isAllied) {
-      target.visibilityTier = 'RADAR';
-      target.visibilityState = 'RESOLVED';
-      continue;
+  if (state.debugState?.revealAllMap || (state as any).state?.debugState?.revealAllMap) {
+    // Force all hostiles and neutral entities to full tactical recognition
+    for (let i = 0; i < shipsLen; i++) {
+      const s = ships[i];
+      if (!s) continue;
+      s.visibilityTier = 'RADAR';
+      s.visibilityState = 'RESOLVED';
+      s.radarIdentified = true;
     }
+  } else {
+    for (let i = 0; i < shipsLen; i++) {
+      const target = ships[i];
+      if (!target) continue;
 
-    const tx = target.x ?? target.pos?.x ?? 0;
-    const ty = target.y ?? target.pos?.y ?? 0;
-
-    let detectedTier: VisibilityTier = 'NONE';
-    for (let j = 0; j < playerEmitters.length; j++) {
-      const em = playerEmitters[j];
-      if (target.systemId && em.systemId && target.systemId !== em.systemId) continue;
-
-      const distSq = (tx - em.x) ** 2 + (ty - em.y) ** 2;
-      if (distSq <= em.radarR ** 2) {
-        detectedTier = 'RADAR';
-        break; // Full radar overrides passive
-      } else if (distSq <= em.passiveR ** 2) {
-        detectedTier = 'PASSIVE';
+      const isAllied = target.faction === 'PLAYER' || target.faction === 'PLAYER_MINER' || target.faction === 'FRIENDLY';
+      if (isAllied) {
+        target.visibilityTier = 'RADAR';
+        target.visibilityState = 'RESOLVED';
+        continue;
       }
-    }
 
-    target.visibilityTier = detectedTier;
-    target.visibilityState = detectedTier === 'RADAR' ? 'RESOLVED' : detectedTier === 'PASSIVE' ? 'BLIP_ONLY' : 'HIDDEN';
+      // Prioritize live physical position object
+      const tx = target.pos ? target.pos.x : (target.x ?? 0);
+      const ty = target.pos ? target.pos.y : (target.y ?? 0);
+      target.x = tx;
+      target.y = ty;
+
+      let detectedTier: VisibilityTier = 'NONE';
+      for (let j = 0; j < emitterCount; j++) {
+        const em = STATIC_EMITTERS_POOL[j];
+        if (target.systemId && em.systemId && target.systemId !== em.systemId) continue;
+
+        const dx = tx - em.x;
+        const dy = ty - em.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq <= em.radarR * em.radarR) {
+          detectedTier = 'RADAR';
+          break; // Full radar overrides passive
+        } else if (distSq <= em.passiveR * em.passiveR) {
+          detectedTier = 'PASSIVE';
+        }
+      }
+
+      target.visibilityTier = detectedTier;
+      target.visibilityState = detectedTier === 'RADAR' ? 'RESOLVED' : detectedTier === 'PASSIVE' ? 'BLIP_ONLY' : 'HIDDEN';
+    }
   }
 
   // 4. Evaluate visibility for missiles and torpedoes
   if (state.missiles) {
-    for (let i = 0; i < state.missiles.length; i++) {
+    const misLen = state.missiles.length;
+    for (let i = 0; i < misLen; i++) {
       const m = state.missiles[i];
       if (!m) continue;
 
@@ -253,15 +265,17 @@ export function updateSensorVisibility(state: GameState | any): void {
       const my = m.y ?? m.pos?.y ?? 0;
 
       let mTier: VisibilityTier = 'NONE';
-      for (let j = 0; j < playerEmitters.length; j++) {
-        const em = playerEmitters[j];
+      for (let j = 0; j < emitterCount; j++) {
+        const em = STATIC_EMITTERS_POOL[j];
         if (m.systemId && em.systemId && m.systemId !== em.systemId) continue;
 
-        const distSq = (mx - em.x) ** 2 + (my - em.y) ** 2;
-        if (distSq <= em.radarR ** 2) {
+        const dx = mx - em.x;
+        const dy = my - em.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq <= em.radarR * em.radarR) {
           mTier = 'RADAR';
           break;
-        } else if (distSq <= em.passiveR ** 2) {
+        } else if (distSq <= em.passiveR * em.passiveR) {
           mTier = 'PASSIVE';
         }
       }

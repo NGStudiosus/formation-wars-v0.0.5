@@ -35,6 +35,7 @@ import { getPlanetaryGravityWellRadius, getLunarGravityWellRadius } from './sola
 import { issueMoveCommand, clearShipMovement } from './movementController';
 import { clampAngularSlew } from './kinematics';
 import { BASE_TACTICAL_RANGES } from './sensorController';
+import { areShipsHostile } from './targetingSystem';
 
 export const RADAR_ENVELOPE_KM = 8400.0;
 export const DEFAULT_BELT_PATROL_RADIUS = 3000.0;
@@ -62,22 +63,41 @@ export function getAssignedCelestialWell(
   const state = npc.npcPatrolState;
   if (!state) return null;
 
+  const cachedBody = (state as any)._cachedBody;
+  if (cachedBody && cachedBody.pos) {
+    const r = (state as any)._cachedRadius || state.patrolRadius;
+    return {
+      id: cachedBody.id,
+      name: cachedBody.name,
+      x: cachedBody.pos.x,
+      y: cachedBody.pos.y,
+      radius: r,
+      radiusSq: r * r,
+    };
+  }
+
   if (solarSystem) {
     if (state.tetherPlanetId) {
       const p = solarSystem.rockyPlanets.find((rp) => rp.id === state.tetherPlanetId);
       if (p) {
         const r = getPlanetaryGravityWellRadius(p);
+        (state as any)._cachedBody = p;
+        (state as any)._cachedRadius = r;
         return { id: p.id, name: p.name, x: p.pos.x, y: p.pos.y, radius: r, radiusSq: r * r };
       }
       const g = solarSystem.gasGiants.find((gg) => gg.id === state.tetherPlanetId);
       if (g) {
         const r = getPlanetaryGravityWellRadius(g);
+        (state as any)._cachedBody = g;
+        (state as any)._cachedRadius = r;
         return { id: g.id, name: g.name, x: g.pos.x, y: g.pos.y, radius: r, radiusSq: r * r };
       }
       for (const rp of solarSystem.rockyPlanets) {
         const m = rp.moons?.find((moon) => moon.id === state.tetherPlanetId);
         if (m) {
           const r = getLunarGravityWellRadius(m);
+          (state as any)._cachedBody = m;
+          (state as any)._cachedRadius = r;
           return { id: m.id, name: m.name, x: m.pos.x, y: m.pos.y, radius: r, radiusSq: r * r };
         }
       }
@@ -85,6 +105,8 @@ export function getAssignedCelestialWell(
         const m = gg.moons?.find((moon) => moon.id === state.tetherPlanetId);
         if (m) {
           const r = getLunarGravityWellRadius(m);
+          (state as any)._cachedBody = m;
+          (state as any)._cachedRadius = r;
           return { id: m.id, name: m.name, x: m.pos.x, y: m.pos.y, radius: r, radiusSq: r * r };
         }
       }
@@ -95,6 +117,8 @@ export function getAssignedCelestialWell(
       const r = getPlanetaryGravityWellRadius(p);
       const d = Math.hypot(state.anchorX - p.pos.x, state.anchorY - p.pos.y);
       if (d <= 50.0) {
+        (state as any)._cachedBody = p;
+        (state as any)._cachedRadius = r;
         return { id: p.id, name: p.name, x: p.pos.x, y: p.pos.y, radius: r, radiusSq: r * r };
       }
     }
@@ -102,6 +126,8 @@ export function getAssignedCelestialWell(
       const r = getPlanetaryGravityWellRadius(g);
       const d = Math.hypot(state.anchorX - g.pos.x, state.anchorY - g.pos.y);
       if (d <= 50.0) {
+        (state as any)._cachedBody = g;
+        (state as any)._cachedRadius = r;
         return { id: g.id, name: g.name, x: g.pos.x, y: g.pos.y, radius: r, radiusSq: r * r };
       }
     }
@@ -134,7 +160,7 @@ export function evaluateWellDefenseEngagement(
     const playerShip = allShips[i];
     if (
       !playerShip ||
-      playerShip.faction === npc.faction ||
+      !areShipsHostile(npc, playerShip) ||
       playerShip.hullState === 'DESTROYED' ||
       (playerShip.hullHp !== undefined && playerShip.hullHp <= 0)
     ) {
@@ -180,7 +206,7 @@ export function evaluateBeltDefenseEngagement(
     const playerShip = allShips[i];
     if (
       !playerShip ||
-      playerShip.faction === npc.faction ||
+      !areShipsHostile(npc, playerShip) ||
       playerShip.hullState === 'DESTROYED' ||
       (playerShip.hullHp !== undefined && playerShip.hullHp <= 0)
     ) {
@@ -544,7 +570,7 @@ export function updateNPCPatrol(
         const candidate = allShips[i];
         if (
           candidate.id === state.targetEntityId &&
-          candidate.faction !== ship.faction &&
+          areShipsHostile(ship, candidate) &&
           candidate.hullState !== 'DESTROYED' &&
           (candidate.hullHp === undefined || candidate.hullHp > 0)
         ) {

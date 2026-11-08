@@ -2,6 +2,8 @@ import { useSyncExternalStore } from 'react';
 
 export interface EngineSettings {
   uiScale: number; // range: 0.25 to 1.00, step: 0.05, default: 1.00
+  commandDeckScale: number; // range: 0.25 to 1.50, step: 0.05, default: 1.00
+  infoStreamMode: 'DEFAULT' | 'DEBUG'; // default: 'DEFAULT' (player units only vs all units)
   panelsVisible: {
     telemetryLog: boolean; // default: true
     shipInspector: boolean; // default: true
@@ -16,6 +18,8 @@ const STORAGE_KEY = 'formation_wars_engine_settings_v1';
 
 const DEFAULT_SETTINGS: EngineSettings = {
   uiScale: 1.0,
+  commandDeckScale: 1.0,
+  infoStreamMode: 'DEFAULT',
   panelsVisible: {
     telemetryLog: true,
     shipInspector: true,
@@ -34,6 +38,10 @@ function loadStoredSettings(): EngineSettings {
       uiScale: typeof parsed.uiScale === 'number'
         ? Math.min(1.0, Math.max(0.25, Math.round(parsed.uiScale * 100) / 100))
         : DEFAULT_SETTINGS.uiScale,
+      commandDeckScale: typeof parsed.commandDeckScale === 'number'
+        ? Math.min(1.50, Math.max(0.25, Math.round(parsed.commandDeckScale * 100) / 100))
+        : DEFAULT_SETTINGS.commandDeckScale,
+      infoStreamMode: parsed.infoStreamMode === 'DEBUG' ? 'DEBUG' : 'DEFAULT',
       panelsVisible: {
         telemetryLog: parsed.panelsVisible?.telemetryLog !== undefined ? Boolean(parsed.panelsVisible.telemetryLog) : true,
         shipInspector: parsed.panelsVisible?.shipInspector !== undefined ? Boolean(parsed.panelsVisible.shipInspector) : true,
@@ -84,6 +92,35 @@ export const settingsStore = {
     }
   },
 
+  setCommandDeckScale(scale: number) {
+    const clamped = Math.min(1.50, Math.max(0.25, Math.round(scale * 100) / 100));
+    if (Math.abs(currentSettings.commandDeckScale - clamped) > 0.001) {
+      currentSettings = {
+        ...currentSettings,
+        commandDeckScale: clamped,
+      };
+      notify();
+    }
+  },
+
+  setInfoStreamMode(mode: 'DEFAULT' | 'DEBUG') {
+    if (currentSettings.infoStreamMode !== mode) {
+      currentSettings = {
+        ...currentSettings,
+        infoStreamMode: mode,
+      };
+      notify();
+    }
+  },
+
+  toggleInfoStreamMode() {
+    currentSettings = {
+      ...currentSettings,
+      infoStreamMode: currentSettings.infoStreamMode === 'DEBUG' ? 'DEFAULT' : 'DEBUG',
+    };
+    notify();
+  },
+
   setPanelVisibility(panel: PanelKey, visible: boolean) {
     if (currentSettings.panelsVisible[panel] !== visible) {
       currentSettings = {
@@ -111,6 +148,8 @@ export const settingsStore = {
   resetSettings() {
     currentSettings = {
       uiScale: 1.0,
+      commandDeckScale: 1.0,
+      infoStreamMode: 'DEFAULT',
       panelsVisible: {
         telemetryLog: true,
         shipInspector: true,
@@ -132,6 +171,9 @@ export function useSettingsStore() {
   return {
     settings,
     setUiScale: settingsStore.setUiScale,
+    setCommandDeckScale: settingsStore.setCommandDeckScale,
+    setInfoStreamMode: settingsStore.setInfoStreamMode,
+    toggleInfoStreamMode: settingsStore.toggleInfoStreamMode,
     setPanelVisibility: settingsStore.setPanelVisibility,
     togglePanelVisibility: settingsStore.togglePanelVisibility,
     resetSettings: settingsStore.resetSettings,

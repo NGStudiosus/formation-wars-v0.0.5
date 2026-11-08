@@ -4,6 +4,7 @@ import {
   TechNodeDefinition,
   ResearchBranch,
   STATIC_BRANCH_GRIDS,
+  getBranchGridForFaction,
   getOperationalLabCounts,
   queueResearchNode,
   calculateResearchTokens,
@@ -145,7 +146,10 @@ const ResearchModalContent: React.FC<ResearchModalProps> = ({
     ? (activeTab as ResearchBranch)
     : 'MILITARY';
 
-  const branchCatalog = STATIC_BRANCH_GRIDS[safeBranch];
+  const playerFaction = engine?.playerFaction || 'NOVAN';
+  const branchCatalog = getBranchGridForFaction
+    ? getBranchGridForFaction(safeBranch, playerFaction)
+    : STATIC_BRANCH_GRIDS[safeBranch];
 
   if (!isOpen) return null;
 
@@ -234,6 +238,16 @@ const ResearchModalContent: React.FC<ResearchModalProps> = ({
     ? 30
     : 10;
 
+  const currentBranchQueue = (typeof engine?.researchManager?.getQueue === 'function'
+    ? engine.researchManager.getQueue(safeBranch)
+    : []) ?? [];
+
+  const activeNodeDef = activeBranchProject?.nodeId
+    ? (typeof engine?.researchManager?.getNode === 'function'
+        ? engine.researchManager.getNode(activeBranchProject.nodeId)
+        : null)
+    : null;
+
   const handleInitiateResearch = (nodeId: string) => {
     if (!engine) return;
     if (engine.isPaused) {
@@ -293,6 +307,26 @@ const ResearchModalContent: React.FC<ResearchModalProps> = ({
         },
         (cat, msg, lvl) => engine.addLog?.(cat as any, msg, lvl)
       );
+    }
+    setRefreshTick((t) => t + 1);
+  };
+
+  const handleRemoveFromQueue = (nodeId: string) => {
+    if (!engine) return;
+    if (typeof engine.removeFromResearchQueue === 'function') {
+      engine.removeFromResearchQueue(nodeId);
+    } else if (engine.researchManager) {
+      engine.researchManager.dequeueNode(nodeId, (cat, msg, lvl) => engine.addLog?.(cat as any, msg, lvl));
+    }
+    setRefreshTick((t) => t + 1);
+  };
+
+  const handleClearQueue = (branch: ResearchBranch) => {
+    if (!engine) return;
+    if (typeof engine.clearResearchQueue === 'function') {
+      engine.clearResearchQueue(branch);
+    } else if (engine.researchManager) {
+      engine.researchManager.clearQueue(branch);
     }
     setRefreshTick((t) => t + 1);
   };
@@ -533,9 +567,111 @@ const ResearchModalContent: React.FC<ResearchModalProps> = ({
           </div>
 
           <div className="hidden md:flex items-center gap-3 text-[10px] text-slate-400">
-            <span>FLAT 10.0S SYNTHESIS</span>
+            <span className="text-cyan-300 font-bold">TIER-SCALED SYNTHESIS (10s – 300s)</span>
             <span className="text-slate-600">•</span>
-            <span>HOVER ICON FOR SCHEMATICS</span>
+            <span className="text-amber-300 font-bold">QUEUE SUPPORTED</span>
+          </div>
+        </div>
+
+        {/* ========================================================= */}
+        {/* 2.5 ACTIVE SYNTHESIS & RESEARCH QUEUE TRAY                */}
+        {/* ========================================================= */}
+        <div className="flex flex-wrap items-center justify-between px-4 sm:px-6 py-1.5 bg-[#03060c] border-b border-slate-800/80 text-[10px] font-mono gap-2 min-h-[34px]">
+          {/* Active Synthesis Project */}
+          <div className="flex items-center gap-2 flex-1 min-w-[280px]">
+            {activeBranchProject && activeNodeDef ? (
+              <div className="flex items-center gap-2 bg-slate-900/90 border border-cyan-500/50 px-2 py-0.5 rounded shadow-xs max-w-md">
+                <span className="text-cyan-400 font-bold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                  SYNTHESIZING:
+                </span>
+                <span className="font-bold text-slate-100 truncate max-w-[140px]" title={activeNodeDef.name}>
+                  {activeNodeDef.name}
+                </span>
+                <span className="text-amber-300 font-mono font-bold">
+                  {((activeBranchProject.totalTicks - activeBranchProject.currentTicks) / 30.0).toFixed(1)}s
+                </span>
+                <div className="w-16 h-1.5 bg-slate-950 rounded overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-cyan-400 to-amber-400 transition-all duration-100"
+                    style={{
+                      width: `${Math.min(100, Math.max(0, (activeBranchProject.currentTicks / (activeBranchProject.totalTicks || 300)) * 100))}%`,
+                    }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleCancelResearch(safeBranch)}
+                  className="px-1 py-0.2 rounded bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-500/60 text-[8px] font-bold transition cursor-pointer"
+                  title="Cancel active project and restore 100% upfront materials"
+                >
+                  CANCEL
+                </button>
+              </div>
+            ) : (
+              <div className="text-slate-500 flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-600" />
+                <span>BRANCH STATUS: <strong className="text-slate-400">IDLE</strong></span>
+                <span className="text-slate-600">• Click an available protocol to initiate</span>
+              </div>
+            )}
+          </div>
+
+          {/* Research Queue Chips */}
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <span className="text-slate-400 font-bold text-[9px] uppercase tracking-wider flex items-center gap-1">
+              <span>QUEUE:</span>
+              <span className={`px-1 py-0.2 rounded text-[8px] font-mono ${currentBranchQueue.length > 0 ? 'bg-amber-950 border border-amber-500/60 text-amber-300 font-bold' : 'bg-slate-900 text-slate-500'}`}>
+                {currentBranchQueue.length}
+              </span>
+            </span>
+
+            {currentBranchQueue.length > 0 ? (
+              <>
+                {currentBranchQueue.slice(0, 4).map((qId, idx) => {
+                  const qNode = typeof engine?.researchManager?.getNode === 'function' ? engine.researchManager.getNode(qId) : null;
+                  const durS = (qNode?.totalTicks || 300) / 30;
+                  const durText = durS < 60 ? `${durS.toFixed(0)}s` : `${Math.floor(durS / 60)}m ${Math.round(durS % 60)}s`;
+                  return (
+                    <div
+                      key={qId}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 bg-amber-950/60 border border-amber-500/50 rounded text-amber-200 text-[9px] shadow-xs"
+                    >
+                      <span className="font-bold text-amber-400">#{idx + 1}</span>
+                      <span className="max-w-[100px] truncate text-slate-200" title={qNode?.name || qId}>
+                        {qNode?.name || qId}
+                      </span>
+                      <span className="text-slate-400 text-[8px]">({durText})</span>
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveFromQueue(qId)}
+                        className="ml-0.5 text-rose-400 hover:text-rose-200 hover:bg-rose-950/80 px-1 py-0.2 rounded cursor-pointer font-bold"
+                        title="Remove from research queue"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  );
+                })}
+                {currentBranchQueue.length > 4 && (
+                  <span className="text-[9px] text-amber-400 font-bold">
+                    +{currentBranchQueue.length - 4} more
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleClearQueue(safeBranch)}
+                  className="px-1.5 py-0.5 rounded bg-slate-900 hover:bg-rose-950/80 text-slate-400 hover:text-rose-300 border border-slate-700 hover:border-rose-500/60 text-[8px] font-bold transition cursor-pointer"
+                  title="Clear all queued research in this branch"
+                >
+                  CLEAR QUEUE
+                </button>
+              </>
+            ) : (
+              <span className="text-slate-500 text-[9px] italic">
+                (Click available protocols to queue ahead)
+              </span>
+            )}
           </div>
         </div>
 

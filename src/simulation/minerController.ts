@@ -105,68 +105,68 @@ export function findCandidateAsteroid(
   safeCount: number;
 } {
   const currentSystemId = miner.systemId || 'SYS_1';
-  const available = asteroids.filter(
-    (a) => a.oreRemaining > 0 && (!a.systemId || a.systemId === currentSystemId)
-  );
-  if (available.length === 0) {
-    return { asteroid: null, reason: 'NO_ASTEROIDS', candidateCount: 0, safeCount: 0 };
+  const minerX = miner.pos.x;
+  const minerY = miner.pos.y;
+  const stance = miner.minerStance || 'TIMID';
+  const effectiveThreatRadius = Math.max(missileRange * 2.0, ASTEROID_THREAT_RADIUS);
+
+  // Pre-filter living hostiles in the miner's system
+  const localHostiles: ShipEntity[] = [];
+  for (let i = 0; i < hostiles.length; i++) {
+    const h = hostiles[i];
+    if (h.hullState !== 'DESTROYED' && (!h.systemId || h.systemId === currentSystemId)) {
+      localHostiles.push(h);
+    }
   }
 
-  const stance = miner.minerStance || 'TIMID';
+  let nearestAst: AsteroidEntity | null = null;
+  let minDistSq = Infinity;
+  let candidateCount = 0;
+  let safeCount = 0;
 
-  if (stance === 'CARELESS') {
-    // Strictly min(distanceSq(miner, asteroid)) across all non-depleted asteroids.
-    // Zero consideration of enemy proximity, orbital boundaries, or planetary well edges.
-    let nearest: AsteroidEntity | null = null;
-    let minDistSq = Infinity;
-    for (const ast of available) {
-      const d = distSq(miner.pos, ast.pos);
-      if (d < minDistSq) {
-        minDistSq = d;
-        nearest = ast;
+  for (let i = 0; i < asteroids.length; i++) {
+    const ast = asteroids[i];
+    if (ast.oreRemaining <= 0) continue;
+    if (ast.systemId && ast.systemId !== currentSystemId) continue;
+    candidateCount++;
+
+    const dx = ast.pos.x - minerX;
+    const dy = ast.pos.y - minerY;
+    const dSq = dx * dx + dy * dy;
+
+    if (stance === 'CARELESS') {
+      if (dSq < minDistSq) {
+        minDistSq = dSq;
+        nearestAst = ast;
+      }
+    } else {
+      // TIMID STANCE: Only test threat if this asteroid is closer than our current best safe candidate!
+      if (dSq < minDistSq) {
+        if (!isAsteroidThreatened(ast, localHostiles, effectiveThreatRadius)) {
+          minDistSq = dSq;
+          nearestAst = ast;
+          safeCount++;
+        }
+      } else if (localHostiles.length === 0) {
+        safeCount++;
       }
     }
-    return {
-      asteroid: nearest,
-      reason: 'NODE_FOUND',
-      candidateCount: available.length,
-      safeCount: available.length,
-    };
   }
 
-  // TIMID STANCE: Evaluate safety of all nodes using 2.0 * R_missile
-  const effectiveThreatRadius = Math.max(missileRange * 2.0, ASTEROID_THREAT_RADIUS);
-  const safeNodes: AsteroidEntity[] = [];
-  for (const ast of available) {
-    if (!isAsteroidThreatened(ast, hostiles, effectiveThreatRadius)) {
-      safeNodes.push(ast);
-    }
-  }
-
-  if (safeNodes.length === 0) {
+  if (!nearestAst) {
     return {
       asteroid: null,
-      reason: 'ALL_NODES_THREATENED',
-      candidateCount: available.length,
-      safeCount: 0,
+      reason: candidateCount === 0 ? 'NO_ASTEROIDS' : 'ALL_NODES_THREATENED',
+      candidateCount,
+      safeCount,
     };
-  }
-
-  let nearestSafe: AsteroidEntity | null = null;
-  let minDistSq = Infinity;
-  for (const ast of safeNodes) {
-    const d = distSq(miner.pos, ast.pos);
-    if (d < minDistSq) {
-      minDistSq = d;
-      nearestSafe = ast;
-    }
   }
 
   return {
-    asteroid: nearestSafe,
+    asteroid: nearestAst,
     reason: 'NODE_FOUND',
-    candidateCount: available.length,
-    safeCount: safeNodes.length,
+    candidateCount,
+    safeCount: stance === 'CARELESS' ? candidateCount : Math.max(1, safeCount),
   };
 }
 
@@ -199,15 +199,21 @@ export function getNearbyThreats(
 
 /**
  * Calculates absolute world-space docking target offset at Fleet HQ.
- * Clamped to the 250 km ore transfer perimeter.
+ * Uses dynamic HQ docking perimeter safely nested within the ore drop-off transfer zone.
  */
-export function getHQDockingTarget(miner: ShipEntity, hq: ShipEntity, transferRadius = R_TRANSFER): Vec2D {
+export function getHQDockingTarget(miner: ShipEntity, hq: ShipEntity, transferRadius?: number): Vec2D {
+  const isRing = Boolean(hq.isRingStructure || hq.hqType === 'GARN_RING_CITADEL' || hq.isGarnRing);
+  const ringOuter = hq.ringOuterRadius || hq.radius || 1100;
+  // Docking target should be positioned at the docking collar / ring perimeter (inside the transfer zone)
+  const effectiveRadius = isRing
+    ? (hq.dockingRadius || (ringOuter + 60.0))
+    : (hq.dockingRadius || 140.0);
   const dx = miner.pos.x - hq.pos.x;
   const dy = miner.pos.y - hq.pos.y;
   const d = Math.hypot(dx, dy) || 1.0;
   return {
-    x: hq.pos.x + (dx / d) * transferRadius,
-    y: hq.pos.y + (dy / d) * transferRadius,
+    x: hq.pos.x + (dx / d) * effectiveRadius,
+    y: hq.pos.y + (dy / d) * effectiveRadius,
   };
 }
 
@@ -222,24 +228,54 @@ export function getHQDistance(miner: ShipEntity, hq: ShipEntity): number {
 }
 
 /**
- * Checks whether miner is within HQ Ore Transfer Range (R_transfer = 250 km).
+ * Checks whether miner is within HQ Ore Transfer Range (dynamically modified by HQ specification).
  */
-export function isWithinHQTransferRange(miner: ShipEntity, hq: ShipEntity, transferRadius = R_TRANSFER): boolean {
-  return getHQDistance(miner, hq) <= transferRadius;
+export function isWithinHQTransferRange(miner: ShipEntity, hq: ShipEntity, transferRadius?: number): boolean {
+  const isRing = Boolean(hq.isRingStructure || hq.hqType === 'GARN_RING_CITADEL' || hq.isGarnRing);
+  const ringOuter = hq.ringOuterRadius || hq.radius || 1100;
+  const effectiveRadius = transferRadius ?? (isRing ? ringOuter + 250.0 : (hq.oreDropOffRange ?? hq.dockingRadius ?? R_TRANSFER));
+  const dist = getHQDistance(miner, hq);
+  if (isRing) {
+    const minInnerRadius = (hq.ringInnerRadius || (ringOuter * (1.40 / 1.68))) - 100;
+    return dist <= effectiveRadius + 40.0 && dist >= minInnerRadius;
+  }
+  return dist <= effectiveRadius + 40.0;
 }
 
 /**
  * Approach Deceleration Clamping & Retro-Braking:
- * As the miner approaches within 1.5 * R_transfer (375 km), clamps maximum thrust
- * and engages retro-braking to bleed off residual velocity before crossing R_transfer.
+ * As the miner approaches within 1.5 * effectiveRadius, clamps maximum thrust
+ * and engages retro-braking to bleed off residual velocity before crossing the transfer boundary.
  */
 export function applyMinerApproachBraking(
   miner: ShipEntity,
   hq: ShipEntity,
   dt: number,
-  transferRadius = R_TRANSFER
+  transferRadius?: number
 ): boolean {
-  return applyMinerApproachDeceleration(miner, hq.pos, transferRadius, dt);
+  const isRing = Boolean(hq.isRingStructure || hq.hqType === 'GARN_RING_CITADEL' || hq.isGarnRing);
+  const ringOuter = hq.ringOuterRadius || hq.radius || 1100;
+  if (isRing) {
+    // For annular ring structures, target the docking perimeter point (ringOuter + 60km)
+    const target = getHQDockingTarget(miner, hq, ringOuter + 60.0);
+    const dx = target.x - miner.pos.x;
+    const dy = target.y - miner.pos.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist <= 60.0) return true;
+    if (dist <= 250.0) {
+      const curSpeed = Math.hypot(miner.velocity.x, miner.velocity.y);
+      const aBrake = miner.acceleration ?? 220.0;
+      const targetSpeed = Math.max(60.0, Math.sqrt(2.0 * aBrake * dist));
+      if (curSpeed > targetSpeed && curSpeed > 0.001) {
+        const scale = targetSpeed / curSpeed;
+        miner.velocity.x *= scale;
+        miner.velocity.y *= scale;
+      }
+    }
+    return false;
+  }
+  const effectiveRadius = transferRadius ?? hq.oreDropOffRange ?? (hq.dockingRadius ?? R_TRANSFER);
+  return applyMinerApproachDeceleration(miner, hq.pos, effectiveRadius, dt);
 }
 
 /**
@@ -253,7 +289,7 @@ export function applyMinerApproachBraking(
 export function engageMinerDockingStationKeeping(
   miner: ShipEntity,
   hq: ShipEntity,
-  transferRadius = R_TRANSFER
+  transferRadius?: number
 ): void {
   // 1. Transition state
   miner.minerState = 'STATE_DOCKING_OFFLOAD';
@@ -268,10 +304,16 @@ export function engageMinerDockingStationKeeping(
   clearShipMovement(miner);
 
   // 4. Lock coordinates relative to HQ at transfer perimeter
+  const isRing = Boolean(hq.isRingStructure || hq.hqType === 'GARN_RING_CITADEL' || hq.isGarnRing);
+  const ringOuter = hq.ringOuterRadius || hq.radius || 1100;
+  const effectiveLimit = transferRadius ?? hq.oreDropOffRange ?? (isRing ? ringOuter + 250.0 : R_TRANSFER);
+
   const dx = miner.pos.x - hq.pos.x;
   const dy = miner.pos.y - hq.pos.y;
   const d = Math.hypot(dx, dy) || 1.0;
-  const holdRadius = Math.min(Math.max(d, 120.0), transferRadius);
+  const holdRadius = isRing
+    ? (hq.dockingRadius || (ringOuter + 60.0))
+    : Math.min(Math.max(d, 100.0), hq.dockingRadius || 140.0);
 
   miner.minerHQOffset = {
     x: (dx / d) * holdRadius,
@@ -287,9 +329,11 @@ export function engageMinerDockingStationKeeping(
   miner.isMoored = false;
   miner.isHoldingVector = false;
 
-  // 5. Connect visual industrial ore transfer conduit
+  // 5. Connect visual industrial ore transfer conduit (targeting outer edge of ring or HQ core)
   miner.transferBeamActive = true;
-  miner.transferBeamTarget = { x: hq.pos.x, y: hq.pos.y };
+  miner.transferBeamTarget = isRing
+    ? { x: hq.pos.x + (dx / d) * ringOuter, y: hq.pos.y + (dy / d) * ringOuter }
+    : { x: hq.pos.x, y: hq.pos.y };
 }
 
 /**
@@ -297,13 +341,18 @@ export function engageMinerDockingStationKeeping(
  * Maintains strict relative lock to HQ coordinates as HQ traverses geosynchronous orbit.
  */
 export function updateMinerDockingStationKeeping(miner: ShipEntity, hq: ShipEntity): void {
+  const isRing = Boolean(hq.isRingStructure || hq.hqType === 'GARN_RING_CITADEL' || hq.isGarnRing);
+  const ringOuter = hq.ringOuterRadius || hq.radius || 1100;
+  const maxR = hq.oreDropOffRange || (isRing ? ringOuter + 250.0 : R_TRANSFER);
+
   if (!miner.minerHQOffset) {
     const dx = miner.pos.x - hq.pos.x;
     const dy = miner.pos.y - hq.pos.y;
     const d = Math.hypot(dx, dy) || 1.0;
+    const holdDist = isRing ? (hq.dockingRadius || (ringOuter + 60.0)) : Math.min(d, hq.dockingRadius || 140.0);
     miner.minerHQOffset = {
-      x: (dx / d) * Math.min(d, R_TRANSFER),
-      y: (dy / d) * Math.min(d, R_TRANSFER),
+      x: (dx / d) * holdDist,
+      y: (dy / d) * holdDist,
     };
   }
 
@@ -317,8 +366,13 @@ export function updateMinerDockingStationKeeping(miner: ShipEntity, hq: ShipEnti
   miner.heading = Math.atan2(-miner.minerHQOffset.y, -miner.minerHQOffset.x);
 
   // Maintain active transfer conduit link to HQ
+  const dx = miner.pos.x - hq.pos.x;
+  const dy = miner.pos.y - hq.pos.y;
+  const d = Math.hypot(dx, dy) || 1.0;
   miner.transferBeamActive = true;
-  miner.transferBeamTarget = { x: hq.pos.x, y: hq.pos.y };
+  miner.transferBeamTarget = isRing
+    ? { x: hq.pos.x + (dx / d) * ringOuter, y: hq.pos.y + (dy / d) * ringOuter }
+    : { x: hq.pos.x, y: hq.pos.y };
 }
 
 /**
@@ -710,8 +764,7 @@ export function stepRetreatSteering(
 
   // If retreating and arrived at HQ ore transfer perimeter with cargo, transition to docking offload
   if (hq && (miner.cargoOre || 0) > 0) {
-    const distToHq = Math.hypot(miner.pos.x - hq.pos.x, miner.pos.y - hq.pos.y);
-    if (distToHq <= R_TRANSFER) {
+    if (isWithinHQTransferRange(miner, hq)) {
       engageMinerDockingStationKeeping(miner, hq);
     }
   }

@@ -66,11 +66,13 @@ function drawHazardStripes(
  */
 export function renderMilitaryResearchStation(
   ctx: CanvasRenderingContext2D,
-  _r: number = 26,
+  r: number = 26,
   timeMs: number = 0
 ): void {
   ctx.save();
   const baseR = 26; // 52px diameter
+  const s = Math.max(0.05, r / baseR);
+  ctx.scale(s, s);
 
   // Three primary pylon apex angles: 0 (forward), 120 deg (lower-left), 240 deg (upper-left)
   const pylonAngles = [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3];
@@ -251,11 +253,13 @@ export function renderMilitaryResearchStation(
  */
 export function renderCivicResearchOutpost(
   ctx: CanvasRenderingContext2D,
-  _r: number = 24,
+  r: number = 24,
   timeMs: number = 0
 ): void {
   ctx.save();
   const baseR = 24; // 48px diameter
+  const s = Math.max(0.05, r / baseR);
+  ctx.scale(s, s);
 
   // 1. Symmetrical Hexagonal Outer Perimeter Spine (#2d333b)
   ctx.strokeStyle = '#2d333b';
@@ -418,11 +422,13 @@ export function renderCivicResearchOutpost(
  */
 export function renderExpansionCitadel(
   ctx: CanvasRenderingContext2D,
-  _r: number = 28,
+  r: number = 28,
   timeMs: number = 0
 ): void {
   ctx.save();
   const baseR = 28; // 56px diameter
+  const s = Math.max(0.05, r / baseR);
+  ctx.scale(s, s);
 
   // 1. Heavy Gravitational Mooring Anchor Struts (4 Outriggers at diagonals)
   const anchorAngles = [-0.68, 0.68, Math.PI - 0.68, Math.PI + 0.68];
@@ -578,10 +584,13 @@ export function renderExpansionCitadel(
  */
 export function renderLightShipyard(
   ctx: CanvasRenderingContext2D,
-  _r: number = 38,
+  r: number = 38,
   timeMs: number = 0
 ): void {
   ctx.save();
+  const baseDesignR = 22; // 44px width
+  const s = Math.max(0.05, r / baseDesignR);
+  ctx.scale(s, s);
   const halfW = 22; // 44px width
   const halfH = 16; // 32px height
   const slipwayHalfH = 7.5; // Central open docking slip
@@ -710,10 +719,13 @@ export function renderLightShipyard(
  */
 export function renderMediumShipyard(
   ctx: CanvasRenderingContext2D,
-  _r: number = 46,
+  r: number = 46,
   timeMs: number = 0
 ): void {
   ctx.save();
+  const baseDesignR = 35; // 70px width
+  const s = Math.max(0.05, r / baseDesignR);
+  ctx.scale(s, s);
   const halfW = 35; // 70px width
   const halfH = 24; // 48px height
   const cradleGap = 13.5; // Inner cradle berth half-height
@@ -882,10 +894,13 @@ export function renderMediumShipyard(
  */
 export function renderHeavyShipyard(
   ctx: CanvasRenderingContext2D,
-  _r: number = 56,
+  r: number = 56,
   timeMs: number = 0
 ): void {
   ctx.save();
+  const baseDesignR = 55; // 110px width
+  const s = Math.max(0.05, r / baseDesignR);
+  ctx.scale(s, s);
   const halfW = 55; // 110px width
   const halfH = 37; // 74px height
   const voidHalfH = 20; // Cavernous central fabrication void half-height
@@ -1159,5 +1174,987 @@ export function renderStructureByRoleOrType(
     return true;
   }
 
+  if (
+    norm === 'GARN_MISSILE_POD' ||
+    norm === 'SDMP' ||
+    norm.includes('GARN_MISSILE_POD') ||
+    norm.includes('SDMP') ||
+    norm.includes('MISSILE_POD')
+  ) {
+    renderGarnSystemMissilePod(ctx, r, timeMs);
+    return true;
+  }
+
   return false;
+}
+
+/**
+ * GARN SYSTEM DEFENSE MISSILE POD (SDMP)
+ * Heavy stationary deep-space defense bastion mounting 64 VLS tubes,
+ * emerald/bronze armor, phased-array radar gantry, and tactical indicator arrays.
+ */
+export function renderGarnSystemMissilePod(
+  ctx: CanvasRenderingContext2D,
+  r: number = 34,
+  timeMs: number = 0
+): void {
+  ctx.save();
+  const s = Math.max(0.4, r / 34.0);
+
+  // Faceted Octagonal Fortress Silhouette
+  const baseR = 34 * s;
+  const octAngles = 8;
+
+  // 1. Heavy Emerald & Bronze Armor Hull
+  ctx.beginPath();
+  for (let i = 0; i < octAngles; i++) {
+    const ang = (i * Math.PI * 2) / octAngles + Math.PI / 8;
+    const px = Math.cos(ang) * baseR;
+    const py = Math.sin(ang) * baseR;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+
+  const hullGrad = ctx.createRadialGradient(0, 0, 4 * s, 0, 0, baseR);
+  hullGrad.addColorStop(0, '#064e3b');
+  hullGrad.addColorStop(0.65, '#022c22');
+  hullGrad.addColorStop(1, '#14532d');
+  ctx.fillStyle = hullGrad;
+  ctx.fill();
+
+  ctx.strokeStyle = '#b45309'; // Bronze trim
+  ctx.lineWidth = 2.4 * s;
+  ctx.stroke();
+
+  // 2. Corner Armor Bastions & Pylons
+  for (let i = 0; i < octAngles; i++) {
+    const ang = (i * Math.PI * 2) / octAngles + Math.PI / 8;
+    const bx = Math.cos(ang) * baseR;
+    const by = Math.sin(ang) * baseR;
+
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.rotate(ang);
+
+    ctx.fillStyle = '#1e293b';
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = 1.2 * s;
+    ctx.fillRect(-3.5 * s, -3.5 * s, 7 * s, 7 * s);
+    ctx.strokeRect(-3.5 * s, -3.5 * s, 7 * s, 7 * s);
+
+    // Green beacon
+    const blink = (timeMs + i * 150) % 500 < 250;
+    ctx.fillStyle = blink ? '#4ade80' : '#166534';
+    ctx.beginPath();
+    ctx.arc(0, 0, 1.8 * s, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // 3. 64-Tube Vertical Launch Array (8x8 VLS Grid)
+  const gridSize = 8;
+  const cellPitch = 3.6 * s;
+  const gridOffset = ((gridSize - 1) * cellPitch) * 0.5;
+
+  ctx.save();
+  for (let row = 0; row < gridSize; row++) {
+    for (let col = 0; col < gridSize; col++) {
+      const cx = col * cellPitch - gridOffset;
+      const cy = row * cellPitch - gridOffset;
+
+      // Silo tube
+      ctx.fillStyle = '#0f172a';
+      ctx.strokeStyle = 'rgba(74, 222, 128, 0.4)';
+      ctx.lineWidth = 0.6 * s;
+      ctx.fillRect(cx - 1.2 * s, cy - 1.2 * s, 2.4 * s, 2.4 * s);
+      ctx.strokeRect(cx - 1.2 * s, cy - 1.2 * s, 2.4 * s, 2.4 * s);
+
+      // Tube armed state light
+      const tubeArmed = (row * 8 + col + Math.floor(timeMs * 0.003)) % 5 !== 0;
+      ctx.fillStyle = tubeArmed ? '#22c55e' : '#f59e0b';
+      ctx.fillRect(cx - 0.5 * s, cy - 0.5 * s, 1.0 * s, 1.0 * s);
+    }
+  }
+  ctx.restore();
+
+  // 4. Rotating Phased Array Radar Gantry
+  const rotRadar = timeMs * 0.002;
+  ctx.save();
+  ctx.rotate(rotRadar);
+
+  // Cross antenna spar
+  ctx.strokeStyle = '#e2e8f0';
+  ctx.lineWidth = 1.6 * s;
+  ctx.beginPath();
+  ctx.moveTo(-baseR * 0.7, 0);
+  ctx.lineTo(baseR * 0.7, 0);
+  ctx.stroke();
+
+  // Dual radar dishes
+  ctx.fillStyle = '#f59e0b';
+  ctx.strokeStyle = '#d97706';
+  ctx.lineWidth = 1.0 * s;
+
+  ctx.beginPath();
+  ctx.arc(baseR * 0.7, 0, 4.0 * s, Math.PI * 0.5, Math.PI * 1.5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(-baseR * 0.7, 0, 4.0 * s, -Math.PI * 0.5, Math.PI * 0.5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.restore();
+
+  // 5. Central Telemetry Dome
+  ctx.beginPath();
+  ctx.arc(0, 0, 4.5 * s, 0, Math.PI * 2);
+  ctx.fillStyle = '#10b981';
+  ctx.fill();
+  ctx.strokeStyle = '#34d399';
+  ctx.lineWidth = 1.2 * s;
+  ctx.stroke();
+
+  // Badge / Designation
+  ctx.fillStyle = '#4ade80';
+  ctx.font = `bold ${Math.max(7, Math.round(8 * s))}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillText('SDMP-64', 0, baseR + 10 * s);
+
+  ctx.restore();
+}
+
+/**
+ * GARN HEGEMONY PLANETARY RING CITADEL (HQ)
+ * 
+ * Renders the colossal artificial ring encircling the Garn Homeworld:
+ * - Grand equatorial ring encircling the entire planet
+ * - Orbital docking arms, heavy defensive bastions, and transit spires
+ * - Shield grid visual arcs projecting outward along perimeter
+ * - Dynamic shadow casting where planet's dark hemisphere eclipses the ring
+ */
+export function drawGarnPlanetaryRingHQ(
+  ctx: CanvasRenderingContext2D,
+  hq: any,
+  planet: any,
+  camera: any
+): void {
+  const planetPos = planet?.pos || hq?.pos;
+  if (!planetPos) return;
+
+  const vpW = camera.viewportWidth ?? (ctx.canvas ? ctx.canvas.width : 1920);
+  const vpH = camera.viewportHeight ?? (ctx.canvas ? ctx.canvas.height : 1080);
+  const zoom = camera.zoom ?? 1.0;
+
+  // Screen coordinates of the host planet / HQ center
+  const px = (planetPos.x - camera.x) * zoom + vpW / 2;
+  const py = (planetPos.y - camera.y) * zoom + vpH / 2;
+
+  const rawRadius = (planet?.radius ?? (hq?.ringOuterRadius ? hq.ringOuterRadius / 1.68 : (hq?.radius ? hq.radius / 1.68 : 700)));
+  const planetScreenR = Math.max(4.0, rawRadius * zoom);
+
+  // Ring geometry: orbits at 1.40x - 1.68x planet radius, with minimum visible thickness
+  const ringInnerR = Math.max(8.0, planetScreenR * 1.40);
+  const ringOuterR = Math.max(ringInnerR + Math.max(3.5, 6.0 * zoom), planetScreenR * 1.68);
+  const ringMidR = (ringInnerR + ringOuterR) * 0.5;
+  const ringWidth = ringOuterR - ringInnerR;
+
+  // Viewport frustum cull
+  if (
+    px + ringOuterR * 2 < -50 ||
+    px - ringOuterR * 2 > vpW + 50 ||
+    py + ringOuterR * 2 < -50 ||
+    py - ringOuterR * 2 > vpH + 50
+  ) {
+    return;
+  }
+
+  // Star lighting direction (star at 0,0 or planet.starCenter)
+  const starX = planet?.starCenter?.x ?? 0;
+  const starY = planet?.starCenter?.y ?? 0;
+  const sunDirX = starX - planetPos.x;
+  const sunDirY = starY - planetPos.y;
+  const sunAngle = Math.atan2(sunDirY, sunDirX);
+  const shadowAngle = sunAngle + Math.PI; // Opposite direction is in shadow
+
+  ctx.save();
+  ctx.translate(px, py);
+
+  // Time-based animations
+  const timeMs = Date.now();
+  const ringRot = timeMs * 0.0001; // Ponderous planetary orbital rotation
+
+  // 1. BASE EQUATORIAL RING TORUS
+  ctx.beginPath();
+  ctx.arc(0, 0, ringOuterR, 0, Math.PI * 2, false);
+  ctx.arc(0, 0, ringInnerR, 0, Math.PI * 2, true);
+  ctx.closePath();
+
+  // Emerald/bronze metallic gradient
+  const ringGrad = ctx.createRadialGradient(0, 0, ringInnerR, 0, 0, ringOuterR);
+  ringGrad.addColorStop(0, '#064e3b');
+  ringGrad.addColorStop(0.3, '#022c22');
+  ringGrad.addColorStop(0.7, '#14532d');
+  ringGrad.addColorStop(1, '#064e3b');
+  ctx.fillStyle = ringGrad;
+  ctx.fill();
+
+  ctx.strokeStyle = '#b45309'; // Bronze structural reinforcement rails
+  ctx.lineWidth = Math.max(1.2, 2.0 * zoom);
+  ctx.stroke();
+
+  // Concentric magnetic transit conduits
+  ctx.beginPath();
+  ctx.arc(0, 0, ringMidR, 0, Math.PI * 2);
+  ctx.strokeStyle = 'rgba(74, 222, 128, 0.75)';
+  ctx.lineWidth = Math.max(1.0, 1.5 * zoom);
+  ctx.setLineDash([Math.max(4, 8 * zoom), Math.max(2, 4 * zoom)]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // 2. ORBITAL DOCKING ARMS, DEFENSIVE BASTIONS & TRANSIENT SPIRES
+  // At close/mid/overview zoom, render perimeter defense bastions with VLS missile blisters
+  if (ringOuterR > 10) {
+    const nodeCount = ringOuterR > 25 ? 24 : 12;
+    for (let i = 0; i < nodeCount; i++) {
+      const nodeAng = (i * Math.PI * 2) / nodeCount + ringRot;
+      const nx = Math.cos(nodeAng) * ringMidR;
+      const ny = Math.sin(nodeAng) * ringMidR;
+
+      ctx.save();
+      ctx.translate(nx, ny);
+      ctx.rotate(nodeAng);
+
+      const isBastion = i % 3 === 0;
+      if (isBastion) {
+        // Heavy Defensive Bastion Node
+        const bW = Math.max(4, 16 * zoom);
+        const bH = Math.max(6, 22 * zoom);
+        ctx.fillStyle = '#1e293b';
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = Math.max(1.0, 1.5 * zoom);
+        ctx.fillRect(-bW * 0.5, -bH * 0.5, bW, bH);
+        ctx.strokeRect(-bW * 0.5, -bH * 0.5, bW, bH);
+
+        // Outward defense missile blisters
+        ctx.fillStyle = '#22c55e';
+        ctx.fillRect(bW * 0.5, -bH * 0.3, Math.max(2, 4 * zoom), bH * 0.6);
+      } else {
+        // Orbital Docking Arm & Gantry Spire
+        const gL = Math.max(3, 12 * zoom);
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = Math.max(1.0, 1.2 * zoom);
+        ctx.beginPath();
+        ctx.moveTo(0, -ringWidth * 0.4);
+        ctx.lineTo(0, ringWidth * 0.4);
+        ctx.moveTo(-gL * 0.5, 0);
+        ctx.lineTo(gL * 0.5, 0);
+        ctx.stroke();
+
+        // Green docking beacon
+        const blink = (timeMs + i * 200) % 600 < 300;
+        ctx.fillStyle = blink ? '#4ade80' : '#166534';
+        ctx.beginPath();
+        ctx.arc(0, 0, Math.max(1.0, 2.2 * zoom), 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+  }
+
+  // 3. Shield Grid Visual Arcs (Pulsing emerald energy barrier projecting outward)
+  const shieldPulse = (Math.sin(timeMs * 0.003) + 1) * 0.5;
+  const shieldR = ringOuterR + (Math.max(2, 4 * zoom) + shieldPulse * Math.max(3, 8 * zoom));
+  ctx.save();
+  ctx.strokeStyle = `rgba(34, 197, 94, ${0.30 + shieldPulse * 0.30})`;
+  ctx.lineWidth = Math.max(1.5, 3.0 * zoom);
+  ctx.setLineDash([Math.max(8, 16 * zoom), Math.max(6, 12 * zoom)]);
+  ctx.beginPath();
+  ctx.arc(0, 0, shieldR, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  // Designation HUD Overlay at high/medium zoom
+  if (zoom > 0.04 || ringOuterR > 25) {
+    ctx.fillStyle = '#4ade80';
+    ctx.font = `bold ${Math.max(8, Math.round(11 * zoom))}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillText('GARN HOMEWORLD RING CITADEL [HQ]', 0, -ringOuterR - Math.max(8, 12 * zoom));
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Local entity fallback renderer for Garn HQ station unit
+ */
+export function renderGarnHQStructure(
+  ctx: CanvasRenderingContext2D,
+  r: number = 90,
+  timeMs: number = 0
+): void {
+  ctx.save();
+  const s = Math.max(0.35, r / 90.0);
+
+  // Annular Capital Fortress Ring
+  const outerR = 85 * s;
+  const innerR = 48 * s;
+  const coreR = 25 * s;
+
+  // Outer ring torus
+  ctx.beginPath();
+  ctx.arc(0, 0, outerR, 0, Math.PI * 2, false);
+  ctx.arc(0, 0, innerR, 0, Math.PI * 2, true);
+  ctx.closePath();
+
+  const ringGrad = ctx.createRadialGradient(0, 0, innerR, 0, 0, outerR);
+  ringGrad.addColorStop(0, '#064e3b');
+  ringGrad.addColorStop(0.5, '#022c22');
+  ringGrad.addColorStop(1, '#14532d');
+  ctx.fillStyle = ringGrad;
+  ctx.fill();
+
+  ctx.strokeStyle = '#b45309';
+  ctx.lineWidth = 3.0 * s;
+  ctx.stroke();
+
+  // Spokes to central command core
+  const spokes = 6;
+  for (let i = 0; i < spokes; i++) {
+    const ang = (i * Math.PI * 2) / spokes;
+    ctx.save();
+    ctx.rotate(ang);
+    ctx.fillStyle = '#14532d';
+    ctx.strokeStyle = '#b45309';
+    ctx.lineWidth = 1.8 * s;
+    ctx.fillRect(coreR, -4 * s, innerR - coreR, 8 * s);
+    ctx.strokeRect(coreR, -4 * s, innerR - coreR, 8 * s);
+
+    // Green conduit
+    ctx.strokeStyle = '#4ade80';
+    ctx.lineWidth = 1.2 * s;
+    ctx.beginPath();
+    ctx.moveTo(coreR, 0);
+    ctx.lineTo(innerR, 0);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Heavy Defensive Perimeter Bastions (12 outer pods)
+  for (let i = 0; i < 12; i++) {
+    const ang = (i * Math.PI * 2) / 12;
+    const bx = Math.cos(ang) * outerR;
+    const by = Math.sin(ang) * outerR;
+
+    ctx.save();
+    ctx.translate(bx, by);
+    ctx.rotate(ang);
+    ctx.fillStyle = '#1e293b';
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = 1.4 * s;
+    ctx.fillRect(-6 * s, -6 * s, 12 * s, 12 * s);
+    ctx.strokeRect(-6 * s, -6 * s, 12 * s, 12 * s);
+
+    // Twin weapon barrels
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(6 * s, -3 * s, 6 * s, 2 * s);
+    ctx.fillRect(6 * s, 1 * s, 6 * s, 2 * s);
+    ctx.restore();
+  }
+
+  // Central Command Citadel
+  ctx.beginPath();
+  ctx.arc(0, 0, coreR, 0, Math.PI * 2);
+  ctx.fillStyle = '#064e3b';
+  ctx.fill();
+  ctx.strokeStyle = '#34d399';
+  ctx.lineWidth = 2.5 * s;
+  ctx.stroke();
+
+  // Radar gantry
+  const rotRadar = timeMs * 0.002;
+  ctx.save();
+  ctx.rotate(rotRadar);
+  ctx.strokeStyle = '#f59e0b';
+  ctx.lineWidth = 2.0 * s;
+  ctx.beginPath();
+  ctx.moveTo(-coreR * 0.8, 0);
+  ctx.lineTo(coreR * 0.8, 0);
+  ctx.stroke();
+  ctx.restore();
+
+  // Label
+  ctx.fillStyle = '#4ade80';
+  ctx.font = `bold ${Math.max(8, Math.round(10 * s))}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillText('GARN RING CITADEL', 0, outerR + 14 * s);
+
+  ctx.restore();
+}
+
+/**
+ * ALDONAH COLONIAL STAR FORTRESS CITADEL (HQ)
+ * Monumental 5-point Trace Italienne colonial star fortress slowly rotating over the volcanic homeworld.
+ * Features heavy slab-masonry bastions, detached triangular ravelin outworks, corner bartizans (échauguettes),
+ * stepped inner cavaliers, heavy twin siege battery turrets, and a superheated smelting crucible core.
+ */
+export function renderAldonahForgeCitadel(
+  ctx: CanvasRenderingContext2D,
+  r: number = 140,
+  timeMs: number = 0
+): void {
+  ctx.save();
+  const s = Math.max(0.4, r / 130.0);
+
+  // 1. Slow, majestic planetary orbit rotation (1 revolution every ~70 seconds)
+  const rot = (timeMs * 0.00009) % (Math.PI * 2);
+  ctx.rotate(rot);
+
+  // Geometric Radii
+  const rBastionTip = 135 * s;
+  const rBastionShoulder = 98 * s;
+  const rBastionFlank = 74 * s;
+  const rCurtain = 62 * s;
+  const rRavelinTip = 108 * s;
+  const rRavelinBase = 72 * s;
+  const rInnerFort = 48 * s;
+  const rCrucible = 22 * s;
+
+  // -------------------------------------------------------------
+  // A. OUTER DEFENSIVE TRENCH & SHIELD MOAT PERIMETER
+  // -------------------------------------------------------------
+  const pulse = Math.sin(timeMs * 0.0025) * 0.15 + 0.85;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(180, 83, 9, 0.35)';
+  ctx.lineWidth = 2.0 * s;
+  ctx.setLineDash([8 * s, 6 * s]);
+  ctx.beginPath();
+  ctx.arc(0, 0, rBastionTip * 1.14 * pulse, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  // -------------------------------------------------------------
+  // B. 5 DETACHED TRIANGULAR RAVELINS / DEMI-LUNES (OUTWORKS)
+  // Positioned midway between the 5 main bastion corners
+  // -------------------------------------------------------------
+  for (let k = 0; k < 5; k++) {
+    const midAngle = (k * 2 * Math.PI) / 5 + Math.PI / 5;
+    const ravTipX = Math.cos(midAngle) * rRavelinTip;
+    const ravTipY = Math.sin(midAngle) * rRavelinTip;
+    const spread = 0.20;
+    const ravLeftX = Math.cos(midAngle - spread) * rRavelinBase;
+    const ravLeftY = Math.sin(midAngle - spread) * rRavelinBase;
+    const ravRightX = Math.cos(midAngle + spread) * rRavelinBase;
+    const ravRightY = Math.sin(midAngle + spread) * rRavelinBase;
+    const ravGorgeX = Math.cos(midAngle) * (rRavelinBase * 0.9);
+    const ravGorgeY = Math.sin(midAngle) * (rRavelinBase * 0.9);
+
+    // Ravelin Outer Rampart Shadow
+    ctx.fillStyle = '#1c1917';
+    ctx.strokeStyle = '#78350f';
+    ctx.lineWidth = 2.4 * s;
+    ctx.beginPath();
+    ctx.moveTo(ravTipX, ravTipY);
+    ctx.lineTo(ravRightX, ravRightY);
+    ctx.lineTo(ravGorgeX, ravGorgeY);
+    ctx.lineTo(ravLeftX, ravLeftY);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Ravelin Bronze Battlement Trim & Parapet
+    ctx.strokeStyle = '#d97706';
+    ctx.lineWidth = 1.2 * s;
+    ctx.beginPath();
+    ctx.moveTo(ravTipX * 0.94, ravTipY * 0.94);
+    ctx.lineTo(ravRightX * 0.95, ravRightY * 0.95);
+    ctx.lineTo(ravGorgeX * 0.95, ravGorgeY * 0.95);
+    ctx.lineTo(ravLeftX * 0.95, ravLeftY * 0.95);
+    ctx.closePath();
+    ctx.stroke();
+
+    // Embrasures (firing ports) along the ravelin faces
+    for (let f = 1; f <= 2; f++) {
+      const t = f / 3;
+      const lx = ravTipX + (ravLeftX - ravTipX) * t;
+      const ly = ravTipY + (ravLeftY - ravTipY) * t;
+      const rx = ravTipX + (ravRightX - ravTipX) * t;
+      const ry = ravTipY + (ravRightY - ravTipY) * t;
+
+      ctx.fillStyle = '#0c0a09';
+      ctx.beginPath();
+      ctx.arc(lx, ly, 1.8 * s, 0, Math.PI * 2);
+      ctx.arc(rx, ry, 1.8 * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Heavy Kinetic Battery Turret at the Ravelin Tip
+    ctx.save();
+    ctx.translate(ravTipX, ravTipY);
+    ctx.rotate(midAngle);
+    ctx.fillStyle = '#292524';
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 1.2 * s;
+    ctx.beginPath();
+    ctx.arc(0, 0, 4.5 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    // Gun Barrels
+    ctx.fillStyle = '#d97706';
+    ctx.fillRect(0, -1.6 * s, 7 * s, 1.2 * s);
+    ctx.fillRect(0, 0.4 * s, 7 * s, 1.2 * s);
+    ctx.restore();
+  }
+
+  // -------------------------------------------------------------
+  // C. 5-POINT PRIMARY BASTION STAR FORTRESS (TRACE ITALIENNE)
+  // Constructed with classic pointed bastions, flanked faces, and curtain walls
+  // -------------------------------------------------------------
+  ctx.beginPath();
+  for (let k = 0; k < 5; k++) {
+    const aPoint = (k * 2 * Math.PI) / 5;
+    const aShoulderL = aPoint - 0.24;
+    const aFlankL = aPoint - 0.16;
+    const aCurtainMid = aPoint - Math.PI / 5;
+    const aFlankR = aPoint + 0.16;
+    const aShoulderR = aPoint + 0.24;
+
+    const ptX = Math.cos(aPoint) * rBastionTip;
+    const ptY = Math.sin(aPoint) * rBastionTip;
+    const shLX = Math.cos(aShoulderL) * rBastionShoulder;
+    const shLY = Math.sin(aShoulderL) * rBastionShoulder;
+    const flLX = Math.cos(aFlankL) * rBastionFlank;
+    const flLY = Math.sin(aFlankL) * rBastionFlank;
+    const shRX = Math.cos(aShoulderR) * rBastionShoulder;
+    const shRY = Math.sin(aShoulderR) * rBastionShoulder;
+    const flRX = Math.cos(aFlankR) * rBastionFlank;
+    const flRY = Math.sin(aFlankR) * rBastionFlank;
+
+    if (k === 0) {
+      ctx.moveTo(ptX, ptY);
+    } else {
+      ctx.lineTo(ptX, ptY);
+    }
+    ctx.lineTo(shRX, shRY);
+    ctx.lineTo(flRX, flRY);
+
+    // Curtain wall to next bastion's left flank
+    const nextFlankAngle = ((k + 1) * 2 * Math.PI) / 5 - 0.16;
+    const nextCurtainX = Math.cos(aCurtainMid) * rCurtain;
+    const nextCurtainY = Math.sin(aCurtainMid) * rCurtain;
+    ctx.lineTo(nextCurtainX, nextCurtainY);
+
+    const nextShLAngle = ((k + 1) * 2 * Math.PI) / 5 - 0.24;
+    const nextFlLX = Math.cos(nextFlankAngle) * rBastionFlank;
+    const nextFlLY = Math.sin(nextFlankAngle) * rBastionFlank;
+    ctx.lineTo(nextFlLX, nextFlLY);
+    ctx.lineTo(Math.cos(nextShLAngle) * rBastionShoulder, Math.sin(nextShLAngle) * rBastionShoulder);
+  }
+  ctx.closePath();
+
+  // Heavy Basalt & Slab Masonry Fill
+  const fortGrad = ctx.createRadialGradient(0, 0, 15 * s, 0, 0, rBastionTip);
+  fortGrad.addColorStop(0, '#292524');
+  fortGrad.addColorStop(0.55, '#1c1917');
+  fortGrad.addColorStop(1, '#0c0a09');
+  ctx.fillStyle = fortGrad;
+  ctx.fill();
+
+  // Outer Fort Bronze Retaining Wall / Parapet
+  ctx.strokeStyle = '#b45309';
+  ctx.lineWidth = 3.6 * s;
+  ctx.stroke();
+
+  // Fine Golden Crenellation Line
+  ctx.strokeStyle = '#f59e0b';
+  ctx.lineWidth = 1.5 * s;
+  ctx.stroke();
+
+  // -------------------------------------------------------------
+  // D. STEPPED INNER CAVALIER PLATFORMS & CORNER WATCHTOWERS (BARTIZANS)
+  // -------------------------------------------------------------
+  for (let k = 0; k < 5; k++) {
+    const a = (k * 2 * Math.PI) / 5;
+    const tipX = Math.cos(a) * rBastionTip;
+    const tipY = Math.sin(a) * rBastionTip;
+    const cavX = Math.cos(a) * (rBastionTip * 0.72);
+    const cavY = Math.sin(a) * (rBastionTip * 0.72);
+
+    // 1. Raised Cavalier Gun Platform (Inner diamond bastion)
+    ctx.save();
+    ctx.translate(cavX, cavY);
+    ctx.rotate(a);
+    ctx.fillStyle = '#44403c';
+    ctx.strokeStyle = '#d97706';
+    ctx.lineWidth = 1.5 * s;
+    ctx.beginPath();
+    ctx.moveTo(14 * s, 0);
+    ctx.lineTo(0, -10 * s);
+    ctx.lineTo(-10 * s, 0);
+    ctx.lineTo(0, 10 * s);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // Twin Heavy Colonial Siege Cannon Turret
+    ctx.fillStyle = '#1c1917';
+    ctx.strokeStyle = '#fde047';
+    ctx.lineWidth = 1.2 * s;
+    ctx.beginPath();
+    ctx.arc(0, 0, 6 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Extended Heavy Cannons with Recoil Housings
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(2 * s, -2.5 * s, 16 * s, 2.0 * s);
+    ctx.fillRect(2 * s, 0.5 * s, 16 * s, 2.0 * s);
+
+    // Muzzle flash / laser emitter jewel at cannon tips
+    ctx.fillStyle = '#ef4444';
+    ctx.beginPath();
+    ctx.arc(18 * s, -1.5 * s, 1.2 * s, 0, Math.PI * 2);
+    ctx.arc(18 * s, 1.5 * s, 1.2 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // 2. Corner Bartizan Watchtower (Échauguette) perched on each Bastion Salient Point
+    ctx.save();
+    ctx.translate(tipX, tipY);
+    // Cylindrical colonial watchtower base
+    ctx.fillStyle = '#78350f';
+    ctx.strokeStyle = '#fde047';
+    ctx.lineWidth = 1.4 * s;
+    ctx.beginPath();
+    ctx.arc(0, 0, 5.5 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // Amber Tactical Observation Dome
+    ctx.fillStyle = '#f59e0b';
+    ctx.beginPath();
+    ctx.arc(0, 0, 3.0 * s, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Navigation beacon flash
+    if (Math.sin(timeMs * 0.005 + k * 1.3) > 0.3) {
+      ctx.fillStyle = '#fef08a';
+      ctx.beginPath();
+      ctx.arc(0, 0, 1.5 * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  // -------------------------------------------------------------
+  // E. RADIATING MAGNETIC SLAG CONDUITS / DEFENSE GALLERIES
+  // -------------------------------------------------------------
+  for (let k = 0; k < 5; k++) {
+    const a = (k * 2 * Math.PI) / 5;
+    ctx.save();
+    ctx.rotate(a);
+    // Trench channel
+    ctx.fillStyle = '#7c2d12';
+    ctx.strokeStyle = '#ea580c';
+    ctx.lineWidth = 1.2 * s;
+    ctx.fillRect(rCrucible, -3.5 * s, rInnerFort - rCrucible + 10 * s, 7 * s);
+    ctx.strokeRect(rCrucible, -3.5 * s, rInnerFort - rCrucible + 10 * s, 7 * s);
+
+    // Glowing superheated lava/metal flow down the trench
+    const slagPhase = (timeMs * 0.004 + k * 0.4) % 1;
+    ctx.fillStyle = '#fde047';
+    ctx.beginPath();
+    ctx.arc(rCrucible + (rInnerFort - rCrucible) * slagPhase, 0, 2.0 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // -------------------------------------------------------------
+  // F. ELEVATED INNER CITADEL COURTYARD (PARADE GROUND KEEP)
+  // -------------------------------------------------------------
+  ctx.fillStyle = '#1c1917';
+  ctx.strokeStyle = '#d97706';
+  ctx.lineWidth = 2.4 * s;
+  ctx.beginPath();
+  for (let k = 0; k < 5; k++) {
+    const a = (k * 2 * Math.PI) / 5;
+    const cx = Math.cos(a) * rInnerFort;
+    const cy = Math.sin(a) * rInnerFort;
+    if (k === 0) ctx.moveTo(cx, cy);
+    else ctx.lineTo(cx, cy);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Concentric masonry pavers
+  ctx.strokeStyle = 'rgba(245, 158, 11, 0.4)';
+  ctx.lineWidth = 1.2 * s;
+  ctx.beginPath();
+  for (let k = 0; k < 5; k++) {
+    const a = (k * 2 * Math.PI) / 5;
+    const cx = Math.cos(a) * (rInnerFort * 0.65);
+    const cy = Math.sin(a) * (rInnerFort * 0.65);
+    if (k === 0) ctx.moveTo(cx, cy);
+    else ctx.lineTo(cx, cy);
+  }
+  ctx.closePath();
+  ctx.stroke();
+
+  // -------------------------------------------------------------
+  // G. CENTRAL SUPERHEATED SMELTER CRUCIBLE CORE
+  // -------------------------------------------------------------
+  const corePulse = Math.sin(timeMs * 0.0035) * 0.15 + 0.85;
+  const magmaGrad = ctx.createRadialGradient(0, 0, rCrucible * 0.15, 0, 0, rCrucible * 1.1);
+  magmaGrad.addColorStop(0, '#ffffff');
+  magmaGrad.addColorStop(0.25, '#fef08a');
+  magmaGrad.addColorStop(0.55, '#f97316');
+  magmaGrad.addColorStop(0.85, '#dc2626');
+  magmaGrad.addColorStop(1.0, '#450a0a');
+  ctx.fillStyle = magmaGrad;
+  ctx.beginPath();
+  ctx.arc(0, 0, rCrucible * corePulse, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = '#fde047';
+  ctx.lineWidth = 2.2 * s;
+  ctx.stroke();
+
+  // -------------------------------------------------------------
+  // H. COLONIAL CITADEL OBSERVATION SPIRE & ROTATING RADAR ARMATURE
+  // -------------------------------------------------------------
+  ctx.save();
+  // Central bronze cupola
+  ctx.fillStyle = '#78350f';
+  ctx.strokeStyle = '#fde047';
+  ctx.lineWidth = 1.6 * s;
+  ctx.beginPath();
+  ctx.arc(0, 0, 8 * s, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Rotating brass radar armature / navigation beacon
+  const radarRot = timeMs * 0.003;
+  ctx.rotate(radarRot);
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 1.8 * s;
+  ctx.beginPath();
+  ctx.moveTo(-11 * s, 0);
+  ctx.lineTo(11 * s, 0);
+  ctx.moveTo(11 * s, -3 * s);
+  ctx.lineTo(11 * s, 3 * s);
+  ctx.stroke();
+
+  // Radar dish tip beacon
+  ctx.fillStyle = '#38bdf8';
+  ctx.beginPath();
+  ctx.arc(11 * s, 0, 2.0 * s, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // -------------------------------------------------------------
+  // I. MILITARY DESIGNATION CALLOUT / TITLE
+  // -------------------------------------------------------------
+  ctx.save();
+  // Counter-rotate text so it stays horizontally readable
+  ctx.rotate(-rot);
+  ctx.fillStyle = '#fde047';
+  ctx.font = `bold ${Math.max(8, Math.round(10 * s))}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillText('ALDONAH STAR FORTRESS [HQ]', 0, rBastionTip * 1.25);
+  ctx.restore();
+
+  ctx.restore();
+}
+
+/**
+ * LIAAL AGRO-CRUCIBLE CITADEL (HQ)
+ * Sprawling dual-ring bio-agricultural hub with emerald hydroponic bays and 60-tube swarm missile silos.
+ */
+export function renderLiaalAgroCitadel(
+  ctx: CanvasRenderingContext2D,
+  r: number = 105,
+  timeMs: number = 0
+): void {
+  ctx.save();
+  const s = Math.max(0.35, r / 105.0);
+
+  const rotAngle = timeMs * 0.0003;
+  const outerR = 90 * s;
+  const innerR = 55 * s;
+  const coreR = 24 * s;
+
+  // 1. Concentric Hydroponic Bio-Rings
+  ctx.beginPath();
+  ctx.arc(0, 0, outerR, 0, Math.PI * 2, false);
+  ctx.arc(0, 0, innerR, 0, Math.PI * 2, true);
+  ctx.closePath();
+  const bioGrad = ctx.createRadialGradient(0, 0, innerR, 0, 0, outerR);
+  bioGrad.addColorStop(0, '#064e3b');
+  bioGrad.addColorStop(0.5, '#047857');
+  bioGrad.addColorStop(1, '#065f46');
+  ctx.fillStyle = bioGrad;
+  ctx.fill();
+  ctx.strokeStyle = '#f97316'; // Liaal orange solar lattice
+  ctx.lineWidth = 2.4 * s;
+  ctx.stroke();
+
+  // Segmented Emerald Bio-Domes along outer ring
+  const domeCount = 8;
+  for (let d = 0; d < domeCount; d++) {
+    const dAng = (d * Math.PI * 2) / domeCount + rotAngle;
+    const dx = Math.cos(dAng) * (outerR + innerR) * 0.5;
+    const dy = Math.sin(dAng) * (outerR + innerR) * 0.5;
+    ctx.save();
+    ctx.translate(dx, dy);
+    ctx.fillStyle = 'rgba(52, 211, 153, 0.75)';
+    ctx.beginPath();
+    ctx.arc(0, 0, 8 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#fb923c';
+    ctx.lineWidth = 1.2 * s;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // 2. Swarm Missile Silo Clusters (6 surrounding pods)
+  for (let m = 0; m < 6; m++) {
+    const mAng = (m * Math.PI * 2) / 6 - rotAngle * 0.5;
+    const mx = Math.cos(mAng) * (outerR + 8 * s);
+    const my = Math.sin(mAng) * (outerR + 8 * s);
+    ctx.save();
+    ctx.translate(mx, my);
+    ctx.fillStyle = '#1e293b';
+    ctx.strokeStyle = '#f97316';
+    ctx.lineWidth = 1.5 * s;
+    ctx.fillRect(-5 * s, -4 * s, 10 * s, 8 * s);
+    ctx.strokeRect(-5 * s, -4 * s, 10 * s, 8 * s);
+    // VLS tube cells (3x2 miniature dots)
+    ctx.fillStyle = '#ea580c';
+    for (let tx = -3 * s; tx <= 3 * s; tx += 3 * s) {
+      for (let ty = -2 * s; ty <= 2 * s; ty += 4 * s) {
+        ctx.fillRect(tx, ty, 1.5 * s, 1.5 * s);
+      }
+    }
+    ctx.restore();
+  }
+
+  // 3. Central Agromony Core & Comm Spire
+  ctx.fillStyle = '#0f172a';
+  ctx.strokeStyle = '#34d399';
+  ctx.lineWidth = 2.2 * s;
+  ctx.beginPath();
+  ctx.arc(0, 0, coreR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Spire beacon
+  ctx.fillStyle = '#fb923c';
+  ctx.beginPath();
+  ctx.arc(0, 0, 6 * s, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Label
+  ctx.fillStyle = '#fb923c';
+  ctx.font = `bold ${Math.max(8, Math.round(10 * s))}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillText('LIAAL AGRO CITADEL', 0, outerR + 18 * s);
+
+  ctx.restore();
+}
+
+/**
+ * KOVAK RHOMBOID SWARM BASTION (HQ)
+ * Angular rhomboid mass-fabricator fortress built from stamped alloys for rapid multi-berth ship staging.
+ */
+export function renderKovakSwarmBastion(
+  ctx: CanvasRenderingContext2D,
+  r: number = 95,
+  timeMs: number = 0
+): void {
+  ctx.save();
+  const s = Math.max(0.35, r / 95.0);
+
+  const diamondW = 85 * s;
+  const diamondH = 85 * s;
+  const rotPulse = Math.sin(timeMs * 0.004) * 0.2 + 0.8;
+
+  // 1. Angular Rhomboid Stamped Hull Plating
+  ctx.fillStyle = '#1e1b4b';
+  ctx.strokeStyle = '#ef4444';
+  ctx.lineWidth = 3.0 * s;
+  ctx.beginPath();
+  ctx.moveTo(0, -diamondH);
+  ctx.lineTo(diamondW, 0);
+  ctx.lineTo(0, diamondH);
+  ctx.lineTo(-diamondW, 0);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Inner Rhomboid Armor Step
+  ctx.strokeStyle = '#991b1b';
+  ctx.lineWidth = 2.0 * s;
+  ctx.beginPath();
+  ctx.moveTo(0, -diamondH * 0.65);
+  ctx.lineTo(diamondW * 0.65, 0);
+  ctx.lineTo(0, diamondH * 0.65);
+  ctx.lineTo(-diamondW * 0.65, 0);
+  ctx.closePath();
+  ctx.stroke();
+
+  // 2. 4 Outward Mass-Fabrication Berths
+  const berths = [
+    { x: 0, y: -diamondH * 0.8 },
+    { x: diamondW * 0.8, y: 0 },
+    { x: 0, y: diamondH * 0.8 },
+    { x: -diamondW * 0.8, y: 0 },
+  ];
+  for (const b of berths) {
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.fillStyle = '#0f172a';
+    ctx.strokeStyle = '#f87171';
+    ctx.lineWidth = 1.4 * s;
+    ctx.fillRect(-7 * s, -7 * s, 14 * s, 14 * s);
+    ctx.strokeRect(-7 * s, -7 * s, 14 * s, 14 * s);
+    // Red indicator running lights
+    ctx.fillStyle = `rgba(239, 68, 68, ${rotPulse})`;
+    ctx.beginPath();
+    ctx.arc(0, 0, 3 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 3. Central Stamped Hex-Core Reactor
+  ctx.fillStyle = '#7f1d1d';
+  ctx.strokeStyle = '#ef4444';
+  ctx.lineWidth = 2.5 * s;
+  ctx.beginPath();
+  ctx.arc(0, 0, 22 * s, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // Pulsing Core Lattice
+  ctx.strokeStyle = '#fca5a5';
+  ctx.lineWidth = 1.5 * s;
+  ctx.beginPath();
+  ctx.moveTo(-14 * s, 0);
+  ctx.lineTo(14 * s, 0);
+  ctx.moveTo(0, -14 * s);
+  ctx.lineTo(0, 14 * s);
+  ctx.stroke();
+
+  // Label
+  ctx.fillStyle = '#f87171';
+  ctx.font = `bold ${Math.max(8, Math.round(10 * s))}px monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillText('KOVAK SWARM BASTION', 0, diamondH + 16 * s);
+
+  ctx.restore();
 }

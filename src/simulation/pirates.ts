@@ -6,12 +6,14 @@ import {
   GasGiant,
   StarSystemDescriptor,
   ShipRole,
+  FactionId,
 } from '../types';
 import { SeededRNG, getPlanetaryGravityWellRadius } from './solarSystem';
 import { K_SCALE } from './systemConstants';
 import { initNPCPatrolState, DEFAULT_BELT_PATROL_RADIUS } from './npcController';
 import { SHIP_PROTOTYPES, ShipPrototypeDefinition } from './shipPrototypes';
 import { clampAngularSlew } from './kinematics';
+import { FACTION_REGISTRY } from './factions/factionRegistry';
 
 export { SHIP_PROTOTYPES, type ShipPrototypeDefinition };
 
@@ -25,28 +27,86 @@ export function createHostileShip(
   shipClass: string,
   x: number,
   y: number,
-  mooredAnchorId?: string
+  mooredAnchorId?: string,
+  factionId?: FactionId | 'PIRATE'
 ): ShipEntity {
+  const isPirate = faction === 'PIRATE' || factionId === 'PIRATE' || id.includes('pirate');
+  const effectiveFactionId = isPirate ? ('PIRATE' as const) : (factionId || 'KOVAK');
+  const facMeta = isPirate ? null : FACTION_REGISTRY[effectiveFactionId as FactionId];
+  const factionNamePrefix = isPirate ? 'Corsair' : (facMeta ? facMeta.name : 'Imperial');
   const proto = SHIP_PROTOTYPES[shipClass] || SHIP_PROTOTYPES['FRIGATE'];
-  const hp = proto.hp || 1200;
-  const shield = proto.shield || 600;
-  const fuelH2 = proto.fuelH2 || 1000;
+
+  // Balance Tuning:
+  // Pirate/Defender ships deal an ok amount of damage (65 dmg torpedoes) but cannot take much in return (fragile glass hulls, paper shields).
+  // 3 Kovak frigates and a destroyer (10 missile tubes total, 160 dmg/mssl) can destroy 6-7 pirate/defender NPCs with ~90% certainty.
+  let hp: number;
+  let shield: number;
+  let tubes: number;
+  let missilesMax: number;
+  let counterMissilesMax: number;
+  let pdBeams: number;
+  let massRating: number;
+  let missileRange: number;
+  let ewarJammingRating: number;
   const cruiseSpeed = proto.cruiseSpeed || 120;
   const maxSpeed = proto.maxSpeed || 200;
   const heading = Math.random() * Math.PI * 2;
-  const tubes = proto.missileTubes || 2;
-  const missilesMax = proto.missilesMax || 120;
-  const counterMissilesMax = proto.counterMissilesMax || 40;
-  const pdBeams = proto.pdBeams || 1;
-  const massRating = proto.massRating || 25000;
   const baseRadius = proto.baseRadius || 6;
-  const isPirate = faction === 'PIRATE';
+
+  if (isPirate) {
+    if (shipClass === 'DESTROYER' || shipClass === 'DD') {
+      hp = 85;
+      shield = 155;
+      tubes = 3;
+      missilesMax = 60;
+      counterMissilesMax = 10;
+      pdBeams = 1;
+      massRating = 24000;
+      missileRange = 900.0;
+      ewarJammingRating = 0.08;
+    } else if (shipClass === 'HEAVY_CRUISER' || shipClass === 'CH' || shipClass === 'CRUISER' || shipClass === 'CL') {
+      hp = 150;
+      shield = 280;
+      tubes = 4;
+      missilesMax = 100;
+      counterMissilesMax = 16;
+      pdBeams = 2;
+      massRating = 40000;
+      missileRange = 1000.0;
+      ewarJammingRating = 0.10;
+    } else {
+      // Frigate / Scout / Raider
+      hp = 45;
+      shield = 85;
+      tubes = 2;
+      missilesMax = 30;
+      counterMissilesMax = 6;
+      pdBeams = 1;
+      massRating = 14000;
+      missileRange = 850.0;
+      ewarJammingRating = 0.05;
+    }
+  } else {
+    // Sovereign AI Opponent fleet (Military standard)
+    hp = proto.hp || 500;
+    shield = proto.shield || 700;
+    tubes = proto.missileTubes || 2;
+    missilesMax = proto.missilesMax || 120;
+    counterMissilesMax = proto.counterMissilesMax || 40;
+    pdBeams = proto.pdBeams || 1;
+    massRating = proto.massRating || 25000;
+    missileRange = 1100.0;
+    ewarJammingRating = 0.20;
+  }
+
+  const fuelH2 = proto.fuelH2 || 1000;
 
   return {
     id,
-    name: `${isPirate ? 'Corsair' : 'Imperial'} ${proto.name} ${id.split('_').pop()}`,
+    name: `${factionNamePrefix} ${proto.name} ${id.split('_').pop()}`,
     systemId,
     faction: 'HOSTILE',
+    factionId: effectiveFactionId,
     isPirate,
     role: proto.role || (shipClass as ShipRole) || 'FRIGATE',
     shipClass,
@@ -68,8 +128,8 @@ export function createHostileShip(
     hullHp: hp,
     hullMax: hp,
     maxRepairableHull: hp,
-    crippleBar: Math.round(hp * 0.8),
-    crippleBarMax: Math.round(hp * 0.8),
+    crippleBar: Math.round(hp * 0.25),
+    crippleBarMax: Math.round(hp * 0.25),
     hullState: 'OPERATIONAL',
     permanentFrameBuckled: false,
     shield,
@@ -77,7 +137,7 @@ export function createHostileShip(
     shieldHp: shield,
     shieldHpMax: shield,
     shieldHeat: 0,
-    shieldHeatMax: 120,
+    shieldHeatMax: 100,
     shieldOverheated: false,
     shieldCooldownTimer: 0,
     fuelH2,
@@ -97,14 +157,14 @@ export function createHostileShip(
     missilesMax,
     missileTubes: tubes,
     missileCooldown: 0,
-    missileRange: 1100,
+    missileRange,
     counterMissiles: counterMissilesMax,
     counterMissilesMax,
     counterMissilesPerSalvo: Math.max(1, Math.floor(tubes / 2)),
     counterMissileCooldown: 0,
     autoFire: true,
-    ewarJammingRating: 0.2,
-    pdplaRange: 65,
+    ewarJammingRating,
+    pdplaRange: 60,
     pdplaCooldown: 0,
     pdBeams,
     pdplaActiveBeamTarget: null,
@@ -143,74 +203,221 @@ export function createHostileShip(
 }
 
 /**
- * Spawns system-aware hostile fleet and planetary garrison units for a star system
+ * Spawns system-aware hostile fleet and planetary garrison units for a star system.
+ * Rules:
+ * - Each star system has NPCs even if there's no AI or real players in it.
+ * - NPCs are default hostile to all except each other (handled by areShipsHostile).
+ * - Rocky planets have patrollers: 3-6 frigates and 1-2 destroyers (excluding player HQ capital).
+ * - Asteroid clusters have 1-3 frigates each cluster.
+ * - Gas giants have 5-8 frigates, 2-4 destroyers, and 50% chance of spawning a cruiser.
+ * - Units spawn in their own star system with matching systemId and local anchors.
  */
 export function spawnSystemHostiles(system: StarSystemDescriptor, state?: any): ShipEntity[] {
   const spawnedShips: ShipEntity[] = [];
   const isHomeworldSystem = system.index === 0;
+  const sysId = system.id;
+  const sysCenter = system.center || { x: 0, y: 0 };
+  const assignedFaction: FactionId =
+    system.assignedFaction ||
+    (state?.gameSetupConfig?.systemOpponents && system.index > 0
+      ? state.gameSetupConfig.systemOpponents[system.index - 1]
+      : 'KOVAK');
 
-  // 1. Inner Rocky Planet Garrisons & Outposts
+  let shipSeq = 0;
+
+  // 1. ROCKY PLANET PATROLLERS (3-6 Frigates and 1-2 Destroyers)
   const rockyPlanets = (system.planets || []).filter((p) => p.type === 'ROCKY');
 
   for (let i = 0; i < rockyPlanets.length; i++) {
     const planet = rockyPlanets[i];
-    const px = planet.x ?? planet.pos?.x ?? planet.position?.x ?? 0;
-    const py = planet.y ?? planet.pos?.y ?? planet.position?.y ?? 0;
+    const px = planet.x ?? planet.pos?.x ?? planet.position?.x ?? (sysCenter.x + 30000);
+    const py = planet.y ?? planet.pos?.y ?? planet.position?.y ?? sysCenter.y;
+    const isPlayerCapital = isHomeworldSystem && (planet.isPrimaryHabitable || planet.isHabitable);
 
-    // In Homeworld system: Skip player's habitable capital world
-    if (isHomeworldSystem && planet.isHabitable) {
+    // In Homeworld system: Skip player's habitable capital world where player HQ spawns
+    if (isPlayerCapital) {
       continue;
     }
 
-    // In Outer Systems (1 to N-1): The habitable planet is the Enemy Capital/Seat of Power
+    // In Outer Systems (system.index > 0), if this is the habitable planet / seat of power of the AI opponent:
     if (!isHomeworldSystem && planet.isHabitable) {
-      // Spawn heavy capital garrison battlegroup
-      spawnedShips.push(
-        createHostileShip(`${system.id}_CAPITAL_DEF_1`, system.id, 'HOSTILE', 'HEAVY_CRUISER', px + 1200, py + 400, planet.id),
-        createHostileShip(`${system.id}_CAPITAL_ESC_1`, system.id, 'HOSTILE', 'DESTROYER', px - 900, py + 800, planet.id),
-        createHostileShip(`${system.id}_CAPITAL_ESC_2`, system.id, 'HOSTILE', 'FRIGATE', px + 800, py - 1100, planet.id),
-        createHostileShip(`${system.id}_CAPITAL_ESC_3`, system.id, 'HOSTILE', 'FRIGATE', px - 1200, py - 600, planet.id)
+      // Spawn Sovereign Enemy AI Capital Battlegroup (belongs to assignedFaction, NOT pirate)
+      const aiCapitalFlagship = createHostileShip(
+        `${sysId}_AI_FLAGSHIP_${++shipSeq}`,
+        sysId,
+        'HOSTILE',
+        'HEAVY_CRUISER',
+        px + 1200,
+        py + 400,
+        planet.id,
+        assignedFaction
       );
-      continue;
+      aiCapitalFlagship.isPirate = false;
+      aiCapitalFlagship.factionId = assignedFaction;
+      aiCapitalFlagship.patrolAnchor = { x: px, y: py };
+
+      const aiEscortDd1 = createHostileShip(`${sysId}_AI_DD_${++shipSeq}`, sysId, 'HOSTILE', 'DESTROYER', px - 900, py + 800, planet.id, assignedFaction);
+      aiEscortDd1.isPirate = false;
+      aiEscortDd1.factionId = assignedFaction;
+      aiEscortDd1.patrolAnchor = { x: px, y: py };
+
+      const aiEscortDd2 = createHostileShip(`${sysId}_AI_DD_${++shipSeq}`, sysId, 'HOSTILE', 'DESTROYER', px + 900, py - 800, planet.id, assignedFaction);
+      aiEscortDd2.isPirate = false;
+      aiEscortDd2.factionId = assignedFaction;
+      aiEscortDd2.patrolAnchor = { x: px, y: py };
+
+      const aiEscortFf1 = createHostileShip(`${sysId}_AI_FF_${++shipSeq}`, sysId, 'HOSTILE', 'FRIGATE', px + 750, py - 1100, planet.id, assignedFaction);
+      aiEscortFf1.isPirate = false;
+      aiEscortFf1.factionId = assignedFaction;
+      aiEscortFf1.patrolAnchor = { x: px, y: py };
+
+      const aiEscortFf2 = createHostileShip(`${sysId}_AI_FF_${++shipSeq}`, sysId, 'HOSTILE', 'FRIGATE', px - 1100, py - 600, planet.id, assignedFaction);
+      aiEscortFf2.isPirate = false;
+      aiEscortFf2.factionId = assignedFaction;
+      aiEscortFf2.patrolAnchor = { x: px, y: py };
+
+      const aiEscortFf3 = createHostileShip(`${sysId}_AI_FF_${++shipSeq}`, sysId, 'HOSTILE', 'FRIGATE', px - 700, py + 1200, planet.id, assignedFaction);
+      aiEscortFf3.isPirate = false;
+      aiEscortFf3.factionId = assignedFaction;
+      aiEscortFf3.patrolAnchor = { x: px, y: py };
+
+      spawnedShips.push(aiCapitalFlagship, aiEscortDd1, aiEscortDd2, aiEscortFf1, aiEscortFf2, aiEscortFf3);
     }
 
-    // Secondary Non-Habitable Inner Rocky Worlds:
-    // 50% chance to host an active pirate outpost / picket patrol
-    const spawnRoll = Math.random();
-    if (spawnRoll > 0.4) {
-      const patrolCount = isHomeworldSystem ? 2 : Math.floor(Math.random() * 2) + 2; // 2 in homeworld, 2-3 in outer systems
+    // Rocky Planet NPC Patrollers: 3-6 Frigates and 1-2 Destroyers
+    const frigateCount = Math.floor(Math.random() * 4) + 3; // 3 to 6
+    const destroyerCount = Math.floor(Math.random() * 2) + 1; // 1 to 2
+    const totalPatrollers = frigateCount + destroyerCount;
 
-      for (let s = 0; s < patrolCount; s++) {
-        const angle = (s / patrolCount) * Math.PI * 2 + Math.random() * 0.4;
-        const orbitDist = 1400 + Math.random() * 600;
-        const shipClass = !isHomeworldSystem && s === 0 && Math.random() > 0.5 ? 'DESTROYER' : 'FRIGATE';
+    for (let s = 0; s < totalPatrollers; s++) {
+      const isDestroyer = s < destroyerCount;
+      const shipClass = isDestroyer ? 'DESTROYER' : 'FRIGATE';
+      const angle = (s / totalPatrollers) * Math.PI * 2 + Math.random() * 0.3;
+      const orbitDist = Math.max(planet.radius + 350, 1400) + Math.random() * 600;
+      const sx = px + Math.cos(angle) * orbitDist;
+      const sy = py + Math.sin(angle) * orbitDist;
 
-        spawnedShips.push(
-          createHostileShip(
-            `${system.id}_PLN_${i + 1}_PATROL_${s + 1}`,
-            system.id,
-            'PIRATE',
-            shipClass,
-            px + Math.cos(angle) * orbitDist,
-            py + Math.sin(angle) * orbitDist,
-            planet.id
-          )
-        );
-      }
+      const patroller = createHostileShip(
+        `${sysId}_PLN_${i + 1}_PATROL_${++shipSeq}`,
+        sysId,
+        'PIRATE',
+        shipClass,
+        sx,
+        sy,
+        planet.id,
+        'PIRATE' as any
+      );
+      patroller.patrolAnchor = { x: px, y: py };
+      patroller.patrolRadius = orbitDist + 400;
+      patroller.patrolWaypoints = generatePerimeterWaypoints({ x: px, y: py }, orbitDist, angle);
+      patroller.npcPatrolState = {
+        anchorX: px,
+        anchorY: py,
+        patrolRadius: orbitDist + 400,
+        leashRadius: (orbitDist + 400) * 1.5,
+        behaviorState: 'PATROL_ROAM',
+        currentWanderTarget: null,
+        dwellTicksRemaining: Math.floor(Math.random() * 60),
+        targetEntityId: null,
+        tetherPlanetId: planet.id,
+      };
+      spawnedShips.push(patroller);
     }
   }
 
-  // 2. Asteroid Belt Raider Presence (1 to 2 Raider Pairs per Belt)
-  const beltClusters = (system.clusters || []).filter((c) => c.id && c.id.includes('BELT'));
-  const candidateClusters = beltClusters.length > 0 ? beltClusters : system.clusters || [];
-  if (candidateClusters.length > 0) {
-    const clusterPick = candidateClusters[Math.floor(Math.random() * candidateClusters.length)];
-    const cx = clusterPick.center?.x ?? (clusterPick as any).x ?? 0;
-    const cy = clusterPick.center?.y ?? (clusterPick as any).y ?? 0;
-    spawnedShips.push(
-      createHostileShip(`${system.id}_RAIDER_1`, system.id, 'PIRATE', 'FRIGATE', cx + 300, cy, clusterPick.id),
-      createHostileShip(`${system.id}_RAIDER_2`, system.id, 'PIRATE', 'CORVETTE', cx - 300, cy + 200, clusterPick.id)
-    );
+  // 2. ASTEROID CLUSTER PATROLLERS (1-3 Frigates each cluster)
+  const allClusters = system.clusters || [];
+  for (let c = 0; c < allClusters.length; c++) {
+    const cluster = allClusters[c];
+    const cx = cluster.center?.x ?? (cluster as any).x ?? sysCenter.x;
+    const cy = cluster.center?.y ?? (cluster as any).y ?? sysCenter.y;
+    const clusterFrigateCount = Math.floor(Math.random() * 3) + 1; // 1 to 3
+
+    for (let f = 0; f < clusterFrigateCount; f++) {
+      const angle = (f / clusterFrigateCount) * Math.PI * 2 + Math.random() * 0.5;
+      const dist = 300 + Math.random() * 600;
+      const fx = cx + Math.cos(angle) * dist;
+      const fy = cy + Math.sin(angle) * dist;
+
+      const clusterPicket = createHostileShip(
+        `${sysId}_CLUST_${c + 1}_PICKET_${++shipSeq}`,
+        sysId,
+        'PIRATE',
+        'FRIGATE',
+        fx,
+        fy,
+        cluster.id,
+        'PIRATE' as any
+      );
+      clusterPicket.patrolAnchor = { x: cx, y: cy };
+      clusterPicket.patrolRadius = cluster.radius || 2200;
+      clusterPicket.patrolWaypoints = generatePerimeterWaypoints({ x: cx, y: cy }, 800, angle);
+      clusterPicket.npcPatrolState = {
+        anchorX: cx,
+        anchorY: cy,
+        patrolRadius: cluster.radius || 2200,
+        leashRadius: (cluster.radius || 2200) * 1.5,
+        behaviorState: 'PATROL_ROAM',
+        currentWanderTarget: null,
+        dwellTicksRemaining: Math.floor(Math.random() * 60),
+        targetEntityId: null,
+      };
+      spawnedShips.push(clusterPicket);
+    }
+  }
+
+  // 3. GAS GIANT GARRISONS (5-8 Frigates, 2-4 Destroyers and 50% chance of spawning a cruiser)
+  const gasGiants = (system.planets || []).filter((p) => p.type === 'GAS_GIANT');
+  for (let g = 0; g < gasGiants.length; g++) {
+    const giant = gasGiants[g];
+    const gx = giant.x ?? giant.pos?.x ?? giant.position?.x ?? (sysCenter.x + 180000);
+    const gy = giant.y ?? giant.pos?.y ?? giant.position?.y ?? sysCenter.y;
+
+    const giantFrigates = Math.floor(Math.random() * 4) + 5; // 5 to 8
+    const giantDestroyers = Math.floor(Math.random() * 3) + 2; // 2 to 4
+    const spawnCruiser = Math.random() < 0.5; // 50% chance
+    const cruiserCount = spawnCruiser ? 1 : 0;
+    const totalGiantShips = giantFrigates + giantDestroyers + cruiserCount;
+
+    for (let s = 0; s < totalGiantShips; s++) {
+      let shipClass = 'FRIGATE';
+      if (s < cruiserCount) {
+        shipClass = Math.random() > 0.5 ? 'HEAVY_CRUISER' : 'LIGHT_CRUISER';
+      } else if (s < cruiserCount + giantDestroyers) {
+        shipClass = 'DESTROYER';
+      }
+
+      const angle = (s / totalGiantShips) * Math.PI * 2 + Math.random() * 0.25;
+      const orbitDist = Math.max(giant.radius + 600, 2400) + Math.random() * 900;
+      const sx = gx + Math.cos(angle) * orbitDist;
+      const sy = gy + Math.sin(angle) * orbitDist;
+
+      const giantWarship = createHostileShip(
+        `${sysId}_GIANT_${g + 1}_GARRISON_${++shipSeq}`,
+        sysId,
+        'PIRATE',
+        shipClass,
+        sx,
+        sy,
+        giant.id,
+        'PIRATE' as any
+      );
+      giantWarship.patrolAnchor = { x: gx, y: gy };
+      giantWarship.patrolRadius = orbitDist + 800;
+      giantWarship.patrolWaypoints = generatePerimeterWaypoints({ x: gx, y: gy }, orbitDist, angle);
+      giantWarship.npcPatrolState = {
+        anchorX: gx,
+        anchorY: gy,
+        patrolRadius: orbitDist + 800,
+        leashRadius: (orbitDist + 800) * 1.5,
+        behaviorState: 'PATROL_ROAM',
+        currentWanderTarget: null,
+        dwellTicksRemaining: Math.floor(Math.random() * 60),
+        targetEntityId: null,
+        tetherPlanetId: giant.id,
+      };
+      spawnedShips.push(giantWarship);
+    }
   }
 
   return spawnedShips;
@@ -319,12 +526,16 @@ export function createPirateBastion(pos: Vec2D): ShipEntity {
     combatStance: 'AGGRESSIVE',
     aggressiveDoctrine: 'KILL',
     pos: { ...pos },
+    x: pos.x,
+    y: pos.y,
     velocity: { x: 0, y: 0 },
     heading: 0,
     maxSpeed: 0,
     isStationary: true,
     isPirateBastion: true,
     defeatOnDestruction: false,
+    visibilityTier: 'NONE',
+    visibilityState: 'HIDDEN',
 
     splineActive: false,
     splineP0: { ...pos },
@@ -407,9 +618,13 @@ export function createPirateHeavyCruiser(
     combatStance: 'AGGRESSIVE',
     aggressiveDoctrine: 'KILL',
     pos: { ...pos },
+    x: pos.x,
+    y: pos.y,
     velocity: { x: 0, y: 0 },
     heading: Math.PI,
     maxSpeed: 120.0,
+    visibilityTier: 'NONE',
+    visibilityState: 'HIDDEN',
 
     splineActive: false,
     splineP0: { ...pos },
@@ -423,20 +638,20 @@ export function createPirateHeavyCruiser(
     h2Fuel: 1600,
     fuelReserveRule: 0.4,
 
-    missilesMax: 600,
-    missiles: 600,
-    missileTubes: 7,
+    missilesMax: 120,
+    missiles: 120,
+    missileTubes: 4,
     missileCooldown: 0,
-    missileRange: 1200.0,
+    missileRange: 1050.0,
     autoFire: true,
 
-    counterMissilesMax: 150,
-    counterMissiles: 150,
-    counterMissilesPerSalvo: 5,
+    counterMissilesMax: 20,
+    counterMissiles: 20,
+    counterMissilesPerSalvo: 2,
     counterMissileCooldown: 0,
-    pdplaRange: 65.0,
+    pdplaRange: 60.0,
     pdplaCooldown: 0,
-    pdBeams: 3,
+    pdBeams: 2,
     pdplaActiveBeamTarget: null,
     pdplaActiveBeamTargets: [],
     pdplaBeamTimer: 0,
@@ -446,23 +661,23 @@ export function createPirateHeavyCruiser(
     pdplaOverheatTimer: 0,
     pdplaOverheatDuration: 5.0,
 
-    hullMax: 1100,
-    hullHp: 1100,
-    maxRepairableHull: 1100,
-    crippleBarMax: 900,
-    crippleBar: 900,
+    hullMax: 180,
+    hullHp: 180,
+    maxRepairableHull: 180,
+    crippleBarMax: 45,
+    crippleBar: 45,
     hullState: 'OPERATIONAL',
     permanentFrameBuckled: false,
 
-    shieldHpMax: 3200,
-    shieldHp: 3200,
+    shieldHpMax: 340,
+    shieldHp: 340,
     shieldHeat: 0.0,
-    shieldHeatMax: 120.0,
+    shieldHeatMax: 100.0,
     shieldOverheated: false,
     shieldCooldownTimer: 0.0,
 
-    ewarJammingRating: 0.3,
-    massRating: 65000.0,
+    ewarJammingRating: 0.12,
+    massRating: 45000.0,
     fmsActive: false,
     fmsMultiplier: 3.5,
 
@@ -502,9 +717,13 @@ export function createPirateDestroyer(
     combatStance: 'AGGRESSIVE',
     aggressiveDoctrine: 'KILL',
     pos: { ...pos },
+    x: pos.x,
+    y: pos.y,
     velocity: { x: 0, y: 0 },
     heading: Math.PI,
     maxSpeed: 165.0,
+    visibilityTier: 'NONE',
+    visibilityState: 'HIDDEN',
 
     splineActive: false,
     splineP0: { ...pos },
@@ -518,20 +737,20 @@ export function createPirateDestroyer(
     h2Fuel: 950,
     fuelReserveRule: 0.4,
 
-    missilesMax: 250,
-    missiles: 250,
-    missileTubes: 4,
+    missilesMax: 60,
+    missiles: 60,
+    missileTubes: 3,
     missileCooldown: 0,
-    missileRange: 1100.0,
+    missileRange: 900.0,
     autoFire: true,
 
-    counterMissilesMax: 80,
-    counterMissiles: 80,
-    counterMissilesPerSalvo: 2,
+    counterMissilesMax: 10,
+    counterMissiles: 10,
+    counterMissilesPerSalvo: 1,
     counterMissileCooldown: 0,
-    pdplaRange: 65.0,
+    pdplaRange: 60.0,
     pdplaCooldown: 0,
-    pdBeams: 2,
+    pdBeams: 1,
     pdplaActiveBeamTarget: null,
     pdplaActiveBeamTargets: [],
     pdplaBeamTimer: 0,
@@ -541,23 +760,23 @@ export function createPirateDestroyer(
     pdplaOverheatTimer: 0,
     pdplaOverheatDuration: 5.0,
 
-    hullMax: 550,
-    hullHp: 550,
-    maxRepairableHull: 550,
-    crippleBarMax: 450,
-    crippleBar: 450,
+    hullMax: 85,
+    hullHp: 85,
+    maxRepairableHull: 85,
+    crippleBarMax: 21.25,
+    crippleBar: 21.25,
     hullState: 'OPERATIONAL',
     permanentFrameBuckled: false,
 
-    shieldHpMax: 1500,
-    shieldHp: 1500,
+    shieldHpMax: 155,
+    shieldHp: 155,
     shieldHeat: 0.0,
     shieldHeatMax: 100.0,
     shieldOverheated: false,
     shieldCooldownTimer: 0.0,
 
-    ewarJammingRating: 0.2,
-    massRating: 32000.0,
+    ewarJammingRating: 0.08,
+    massRating: 24000.0,
     fmsActive: false,
     fmsMultiplier: 4.0,
 
@@ -597,9 +816,13 @@ export function createPirateFrigate(
     combatStance: 'AGGRESSIVE',
     aggressiveDoctrine: 'KILL',
     pos: { ...pos },
+    x: pos.x,
+    y: pos.y,
     velocity: { x: 0, y: 0 },
     heading: Math.PI,
     maxSpeed: 190.0,
+    visibilityTier: 'NONE',
+    visibilityState: 'HIDDEN',
 
     splineActive: false,
     splineP0: { ...pos },
@@ -613,18 +836,18 @@ export function createPirateFrigate(
     h2Fuel: 650,
     fuelReserveRule: 0.4,
 
-    missilesMax: 120,
-    missiles: 120,
+    missilesMax: 30,
+    missiles: 30,
     missileTubes: 2,
     missileCooldown: 0,
-    missileRange: 1050.0,
+    missileRange: 850.0,
     autoFire: true,
 
-    counterMissilesMax: 40,
-    counterMissiles: 40,
+    counterMissilesMax: 6,
+    counterMissiles: 6,
     counterMissilesPerSalvo: 1,
     counterMissileCooldown: 0,
-    pdplaRange: 65.0,
+    pdplaRange: 55.0,
     pdplaCooldown: 0,
     pdBeams: 1,
     pdplaActiveBeamTarget: null,
@@ -636,23 +859,23 @@ export function createPirateFrigate(
     pdplaOverheatTimer: 0,
     pdplaOverheatDuration: 5.0,
 
-    hullMax: 350,
-    hullHp: 350,
-    maxRepairableHull: 350,
-    crippleBarMax: 300,
-    crippleBar: 300,
+    hullMax: 45,
+    hullHp: 45,
+    maxRepairableHull: 45,
+    crippleBarMax: 11.25,
+    crippleBar: 11.25,
     hullState: 'OPERATIONAL',
     permanentFrameBuckled: false,
 
-    shieldHpMax: 800,
-    shieldHp: 800,
+    shieldHpMax: 85,
+    shieldHp: 85,
     shieldHeat: 0.0,
     shieldHeatMax: 100.0,
     shieldOverheated: false,
     shieldCooldownTimer: 0.0,
 
-    ewarJammingRating: 0.15,
-    massRating: 18000.0,
+    ewarJammingRating: 0.05,
+    massRating: 14000.0,
     fmsActive: false,
     fmsMultiplier: 5.0,
 
@@ -813,6 +1036,8 @@ export function generatePirateFaction(
       x: planet.pos.x + Math.cos(offsetAngle) * gwPerimeterRadius,
       y: planet.pos.y + Math.sin(offsetAngle) * gwPerimeterRadius,
     };
+    ship.x = ship.pos.x;
+    ship.y = ship.pos.y;
     ship.patrolAnchor = { ...planet.pos };
     ship.patrolRadius = maxPatrol;
     ship.patrolPattern = 'ELLIPSE_SWEEP';

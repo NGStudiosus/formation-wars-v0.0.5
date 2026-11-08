@@ -72,13 +72,40 @@ export function auditJumpViability(
   ship: ShipEntity,
   targetPos: Vec2D,
   ftlInterdictionRadius: number,
-  systemDiameter: number = JUMP_CONFIG.defaultSystemDiameter
+  systemDiameter: number = JUMP_CONFIG.defaultSystemDiameter,
+  systems?: { id: string; center: Vec2D }[]
 ): JumpAuditResult {
   const jumpDist = Math.hypot(targetPos.x - ship.pos.x, targetPos.y - ship.pos.y);
   const fuelCost = calculateJumpCost(ship.pos, targetPos, systemDiameter);
 
-  if (!ship || ship.hullState !== 'OPERATIONAL' || ship.isStationary) {
+  const canJumpStationary = ship.isCityShip || ship.role === 'CITY_SHIP' || (ship.role === 'HQ' && (ship.isYestiriRing || ship.factionId === 'YESTIRI' || ship.isCityShip));
+  if (!ship || ship.hullState !== 'OPERATIONAL' || (ship.isStationary && !canJumpStationary)) {
     return { valid: false, reason: 'Stationary, crippled, or invalid vessel', fuelCost, jumpDist };
+  }
+
+  // Interstellar FTL limit: Mobile HQ City Ship cannot FTL jump out of its spawn system, unlike the end-game 100 Neridium City Ship
+  if (ship.role === 'HQ') {
+    if (systems && systems.length > 1) {
+      const originSys = resolveSystemIdAt(ship.pos, systems);
+      const targetSys = resolveSystemIdAt(targetPos, systems);
+      if (originSys !== targetSys) {
+        return {
+          valid: false,
+          reason: 'Mobile HQ City Ship cannot FTL jump out of its home star system (Microjump within system only)',
+          fuelCost,
+          jumpDist,
+        };
+      }
+    }
+    const maxLocalSpan = (systemDiameter || JUMP_CONFIG.defaultSystemDiameter) * 0.95;
+    if (jumpDist > maxLocalSpan) {
+      return {
+        valid: false,
+        reason: 'Jump coordinates exceed star system boundary (HQ restricted to home system)',
+        fuelCost,
+        jumpDist,
+      };
+    }
   }
 
   if (ship.jumpState === 'SPOOLING') {
@@ -124,10 +151,18 @@ export function initiateSingleJump(
   systems?: { id: string; center: Vec2D }[],
   addLog?: (category: any, text: string, severity?: 'info' | 'warn' | 'crit' | 'success') => void
 ): { success: boolean; reason?: string } {
-  const audit = auditJumpViability(ship, targetPos, ftlInterdictionRadius, systemDiameter);
+  const audit = auditJumpViability(ship, targetPos, ftlInterdictionRadius, systemDiameter, systems);
   if (!audit.valid) {
     addLog?.('MICROJUMP', `⛔ ${ship.name}: Jump Aborted — ${audit.reason}`, 'warn');
     return { success: false, reason: audit.reason };
+  }
+
+  // Clear planetary mooring if starting jump from anchor
+  if (ship.isMoored || ship.capturedReferenceFrame) {
+    ship.isMoored = false;
+    ship.inGravityWell = false;
+    ship.capturedReferenceFrame = null;
+    ship.isStationary = false;
   }
 
   const originSystemId = resolveSystemIdAt(ship.pos, systems);

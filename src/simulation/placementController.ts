@@ -203,11 +203,23 @@ export function validatePlacementCoordinates(
   }
 
   if (!candidateWell.isAlliedOrCaptured) {
+    const operationalShips = (engine.ships || []).filter((s) => s.hullState === 'OPERATIONAL');
+    const detectedHostiles = operationalShips.filter((s) => {
+      if (s.faction !== 'HOSTILE' || !s.visibilityTier || s.visibilityTier === 'NONE' || s.visibilityState === 'HIDDEN') return false;
+      const dx = s.pos.x - candidateWell!.pos.x;
+      const dy = s.pos.y - candidateWell!.pos.y;
+      return dx * dx + dy * dy <= candidateWell!.wellRadius * candidateWell!.wellRadius;
+    }).length;
+
+    const reason = detectedHostiles > 0
+      ? `Contested Sector: [${candidateWell.name}] is occupied by hostile forces (${detectedHostiles} contacts detected)! Clear garrison first.`
+      : `Unsecured Sector: [${candidateWell.name}] has not been secured or surveyed by allied forces. Scout and clear the gravity well first.`;
+
     return {
       isValid: false,
       activeWell: candidateWell,
       worldPos,
-      reason: `Contested Sector: [${candidateWell.name}] is occupied by hostile forces (${candidateWell.hostileCount} contacts detected)! Clear garrison first.`,
+      reason,
     };
   }
 

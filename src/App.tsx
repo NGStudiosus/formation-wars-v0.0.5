@@ -3,6 +3,7 @@ import { SimulationEngine } from './simulation/engine';
 import { SCENARIOS, ScenarioDefinition } from './simulation/scenarios';
 import { TacticalCanvas } from './components/TacticalCanvas';
 import { UpperSystemBar } from './components/UpperSystemBar';
+import { InfoStreamPanel } from './components/InfoStreamPanel';
 import { FleetRibbon } from './components/FleetRibbon';
 import { LowerCommandDeck } from './components/LowerCommandDeck';
 import { TestBenchModal } from './components/TestBenchModal';
@@ -10,9 +11,12 @@ import { CodeInspectorModal } from './components/CodeInspectorModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ResearchModal } from './components/ResearchModal';
 import { ResearchErrorBoundary } from './components/ResearchErrorBoundary';
+import { DiplomacyModal } from './components/DiplomacyModal';
+import { DebugConsole } from './components/DebugConsole';
 import { StructureType, Vec2D } from './types';
 import { determineFlagship } from './simulation/fleetController';
-import { NewGameModal } from './components/NewGameModal';
+import { NewCampaignMenu } from './components/NewCampaignMenu';
+import { GameSetupConfig } from './types';
 import { GameStatus, state as globalState } from './state/gameState';
 
 export default function App() {
@@ -38,7 +42,21 @@ export default function App() {
   const [isCodeInspectorOpen, setIsCodeInspectorOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isResearchModalOpen, setIsResearchModalOpen] = useState(false);
+  const [isDiplomacyOpen, setIsDiplomacyOpen] = useState(false);
+  const [, setFrameTrigger] = useState(0);
   const wasPausedBeforeResearchRef = useRef(false);
+
+  const handleOpenDiplomacy = useCallback(() => {
+    setIsDiplomacyOpen(true);
+  }, []);
+
+  const handleCloseDiplomacy = useCallback(() => {
+    setIsDiplomacyOpen(false);
+  }, []);
+
+  const handleToggleDiplomacy = useCallback(() => {
+    setIsDiplomacyOpen((prev) => !prev);
+  }, []);
 
   const handleOpenResearchModal = useCallback(() => {
     wasPausedBeforeResearchRef.current = engineRef.current.isPaused;
@@ -74,20 +92,6 @@ export default function App() {
         return true;
       }
     });
-  }, []);
-
-  // Sync HUD telemetry strictly with the engine's deterministic simulation tick
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const engine = engineRef.current;
-    // Throttle React HUD updates to every 3 simulation ticks (~10Hz) to prevent redundant React renders
-    // while keeping telemetry strictly bounded to deterministic engine time
-    const unsubscribe = engine.subscribeTick((tickCount) => {
-      if (tickCount % 3 === 0) {
-        setTick(tickCount);
-      }
-    });
-    return () => unsubscribe();
   }, []);
 
   const handleSelectShip = useCallback((id: string | null) => {
@@ -128,9 +132,9 @@ export default function App() {
     setBuildStructureType(null);
   }, []);
 
-  const handleStartCampaign = useCallback((systemCount: number) => {
+  const handleStartCampaign = useCallback((setupConfig: GameSetupConfig | number) => {
     const engine = engineRef.current;
-    engine.startCampaign(systemCount, Date.now());
+    engine.startCampaign(setupConfig, Date.now());
 
     // Center camera smoothly over System 0 Homeworld
     const homeworld = engine.systems?.[0];
@@ -241,6 +245,11 @@ export default function App() {
         e.preventDefault();
         handleToggleResearchModal();
         return;
+      } else if (key === 'd') {
+        // Toggle Diplomacy Modal [D]
+        e.preventDefault();
+        handleToggleDiplomacy();
+        return;
       } else if (key === 'c') {
         // E-War / Jamming Chaff
         engine.toggleFms();
@@ -325,18 +334,30 @@ export default function App() {
         onOpenResearchModal={handleOpenResearchModal}
       />
 
-      {/* 2. Fixed Upper System Bar (42px Top Ribbon) */}
+      {/* Persistent Floating Debug & Cheat Console */}
+      <DebugConsole
+        state={engineRef.current}
+        onStateModified={() => {
+          setFrameTrigger((prev) => prev + 1);
+        }}
+      />
+
+      {/* 2. Fixed Upper System Bar (40px Compact Top Ribbon) */}
       <UpperSystemBar
         engine={engineRef.current}
         onOpenTestBench={() => setIsTestBenchOpen(true)}
         onOpenCodeInspector={() => setIsCodeInspectorOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenResearchModal={handleOpenResearchModal}
+        onOpenDiplomacy={handleOpenDiplomacy}
         onResetScenario={handleResetScenario}
         onFocusCoordinates={(pos) => setCameraFocusTarget({ ...pos })}
       />
 
-      {/* 2.5 Quick-Select Fleet Binding Ribbon (Directly below top system bar) */}
+      {/* 2.2 Floating Live Tactical Info Stream & Telemetry Panel (Second Level Right) */}
+      <InfoStreamPanel engine={engineRef.current} />
+
+      {/* 2.5 Quick-Select Fleet Binding Ribbon (Second Level Left) */}
       <FleetRibbon
         engine={engineRef.current}
         selectedShipIds={selectedShipIds}
@@ -402,9 +423,16 @@ export default function App() {
         />
       </ResearchErrorBoundary>
 
+      {/* Strategic Diplomacy Matrix & 8-Team Modal */}
+      <DiplomacyModal
+        isOpen={isDiplomacyOpen}
+        onClose={handleCloseDiplomacy}
+        engine={engineRef.current}
+      />
+
       {/* New Campaign Sector Commission Setup Modal */}
       {gameStatus === 'SETUP' && (
-        <NewGameModal onStartCampaign={handleStartCampaign} />
+        <NewCampaignMenu onLaunchCampaign={handleStartCampaign} />
       )}
     </div>
   );

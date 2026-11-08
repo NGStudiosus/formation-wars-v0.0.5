@@ -12,7 +12,7 @@ export interface SensorCoverageBubble {
 }
 
 export type EntityDetectionLevel = 'NONE' | 'PASSIVE' | 'ACTIVE_RADAR';
-export type VisibilityTier = 'NONE' | 'PASSIVE' | 'RADAR';
+export type VisibilityTier = 'NONE' | 'PASSIVE' | 'RADAR' | 'FULL' | 'BLOB';
 
 export interface HostileVisibilityState {
   detectionLevel: EntityDetectionLevel;
@@ -25,6 +25,60 @@ export interface Vec2D {
 }
 
 export type Faction = 'FRIENDLY' | 'HOSTILE';
+
+export type FactionId = 'NOVAN' | 'GARN' | 'ALDONAH' | 'YESTIRI' | 'LIAAL' | 'KOVAK';
+
+export interface FactionMetadata {
+  id: FactionId;
+  name: string;
+  tag: string;
+  primaryColor: string;
+  accentColor: string;
+  description: string;
+  doctrineBrief: string;
+}
+
+export type HomeworldTypeId = 'TERRAN' | 'DESERT' | 'VOLCANIC' | 'ICE' | 'OCEANIC' | 'BARREN';
+
+export type HqTypeId =
+  | 'NOVAN_COMMAND_SPIRE'
+  | 'GARN_RING_CITADEL'
+  | 'ALDONAH_FORGE_CITADEL'
+  | 'YESTIRI_CITY_SHIP'
+  | 'LIAAL_AGRO_CITADEL'
+  | 'KOVAK_SWARM_BASTION';
+
+export type DiplomacyRelation = 'ALLIED' | 'NEUTRAL' | 'ENEMY' | 'OFFER_SENT' | 'OFFER_RECEIVED';
+
+export interface DiplomacyPlayer {
+  id: string;
+  name: string;
+  factionId: FactionId;
+  team: number; // 1 to 8
+  isHuman: boolean;
+  systemIndex: number;
+  systemId?: string;
+  systemName?: string;
+  relationship: DiplomacyRelation;
+  alliedFactionIds?: FactionId[];
+}
+
+export interface GameSetupConfig {
+  /** Number of star systems in the campaign. Strict bounds: [2, 8] */
+  systemCount: number;
+  playerFaction: FactionId;
+  /** Player team assignment (1-8, default 1) */
+  playerTeam?: number;
+  /** Rival faction occupying each non-player system. Length must be systemCount - 1 (1 to 7 entries) */
+  systemOpponents: FactionId[];
+  /** Team assignment for each non-player system opponent (1-8) */
+  systemOpponentTeams?: number[];
+  /** Designated Homeworld planet biome type */
+  homeworldType?: HomeworldTypeId;
+  /** Designated Fleet Headquarters Citadel specification */
+  hqType?: HqTypeId;
+}
+
 export type ShipRole =
   | 'SCOUT'
   | 'CORVETTE'
@@ -37,6 +91,7 @@ export type ShipRole =
   | 'BATTLECRUISER'
   | 'BATTLESHIP'
   | 'DREADNOUGHT'
+  | 'CITY_SHIP'
   | 'COLLIER'
   | 'TANKER'
   | 'REPAIR'
@@ -50,6 +105,9 @@ export type ShipRole =
   | 'SY_HEAVY'
   | 'CARRIER'
   | 'SUPER_CARRIER'
+  | 'LIAAL_LIGHT'
+  | 'LIAAL_MEDIUM'
+  | 'LIAAL_HEAVY'
   | 'VANGUARD'
   | 'REP_SHIP'
   | 'SALVAGER'
@@ -84,7 +142,8 @@ export type StructureType =
   | 'BASTION'
   | 'MRS'
   | 'CRO'
-  | 'EXC';
+  | 'EXC'
+  | 'GARN_MISSILE_POD';
 
 export interface ResearchStationCounts {
   military: number;
@@ -124,9 +183,35 @@ export interface ConstructionScaffold {
   costPaidO?: number;
   buildTicks?: number;
 }
-export type HullState = 'OPERATIONAL' | 'CRIPPLED' | 'DESTROYED';
+export type HullState = 'OPERATIONAL' | 'CRIPPLED' | 'DISABLED' | 'DESTROYED';
 export type CombatStance = 'PASSIVE' | 'DEFENSIVE' | 'AGGRESSIVE';
 export type AggressiveDoctrine = 'KILL' | 'DISABLE';
+
+export type ScrapSize = 'LIGHT' | 'MEDIUM' | 'HEAVY';
+
+export interface ScrapEntity {
+  id: string;
+  pos: Vec2D;
+  heading: number;
+  rotationSpeed: number;
+  size: ScrapSize;
+  units: number; // 1 (LIGHT), 2 (MEDIUM), 3 (HEAVY)
+  metallic: number;
+  organic: number;
+  sourceShipName: string;
+  sourceRole: ShipRole;
+  createdTime: number;
+  systemId?: string;
+}
+
+export interface ScrapCargoItem {
+  id: string;
+  size: ScrapSize;
+  units: number;
+  metallic: number;
+  organic: number;
+  sourceShipName: string;
+}
 
 export type FormationDensity = 'TIGHT' | 'CLOSE' | 'LOOSE';
 export type MovementCohesion = 'UNIT' | 'MAX_SPEED';
@@ -142,6 +227,20 @@ export interface FleetGroup {
   pdPosture: FleetPdPosture;
   screenVanguard: boolean;
   speedCap?: number; // Cached fleet maximum speed clamp v_fleet_cap
+}
+
+export type ShieldCycleState = 'READY' | 'REBOOTING' | 'COOLDOWN';
+export type MicroJumpState = 'IDLE' | 'SPOOLING' | 'IN_TRANSIT' | 'COOLDOWN';
+
+export interface ParasiteHangarBay {
+  lacCapacity: number;          // Light Attack Craft max capacity (e.g., 70 on Fleet Carrier)
+  lacActive: number;            // Current operational count
+  lacLaunched: number;          // Deployed in space around carrier
+  gunshipCapacity: number;      // Heavy Gunship max capacity (e.g., 24 on Fleet Carrier)
+  gunshipActive: number;
+  gunshipLaunched: number;
+  launchRatePerSec: number;     // Launch throughput (craft/sec)
+  recoveryRatePerSec: number;
 }
 
 export type JumpState = 
@@ -169,7 +268,28 @@ export interface ShipEntity {
   id: string;
   name: string;
   faction: Faction;
+  factionId?: FactionId | 'PIRATE';
+  team?: number;
+  proxyFaction?: FactionId;
+  allowProxyBuild?: boolean; // Toggles whether allied factions can proxy commission ships at this yard (default: true)
+  rallyPoint?: Vec2D | null;  // Waypoint coordinate where newly constructed units automatically rally
   role: ShipRole;
+  isGarnLongRange?: boolean;
+  isGarnAnnular?: boolean;
+  isGarnRing?: boolean;
+  isYestiriRing?: boolean;
+  isCityShip?: boolean;
+  hqType?: HqTypeId;
+  oreDropOffRange?: number;
+  armorMitigation?: number;
+  isRingStructure?: boolean;
+  ringInnerRadius?: number;
+  ringOuterRadius?: number;
+  counterMissileRange?: number;
+  isMobile?: boolean;
+  shieldRegen?: number;
+  mountedResearchModules?: ('MRS' | 'CRO' | 'EXC' | string)[];
+  maxMountedModules?: number;
   combatStance: CombatStance;
   aggressiveDoctrine?: AggressiveDoctrine; // 'KILL': fires until dead | 'DISABLE': ceases fire when crippled, self-destructs in-flight
   pos: Vec2D;
@@ -293,6 +413,23 @@ export interface ShipEntity {
   shieldOverheated: boolean;
   shieldCooldownTimer: number;
 
+  // Active Shield Cycling State
+  shieldCycleState?: ShieldCycleState;
+  shieldCycleTimer?: number;       // Remaining ticks in current phase
+  shieldCycleDuration?: number;    // Vulnerability channel ticks (e.g., 120 ticks = 4.0s)
+  shieldCycleCooldown?: number;    // Recharge cooldown ticks (e.g., 900-960 ticks = 30-32.0s)
+  shieldHardeningTimer?: number;   // Post-cycle hardening buff ticks (30 ticks = 1.0s)
+  currentShield?: number;
+
+  // Tactical Micro-Jump Kinematics
+  microJumpState?: MicroJumpState;
+  microJumpSpoolRemaining?: number;
+  microJumpCooldownRemaining?: number;
+  microJumpTarget?: { x: number; y: number };
+
+  // Carrier Strike Craft Hangars (null on non-carrier vessels)
+  hangarBay?: ParasiteHangarBay;
+
   // Hardware Armament Mounts
   bowMissileTubes?: number;
   broadsideMissileTubesPort?: number;
@@ -346,6 +483,15 @@ export interface ShipEntity {
   supportActiveTargets?: string[];     // IDs of ships currently receiving support in the AOE field
   scrapStored?: number;                // Scrap Barge property: 0
   scrapCapacity?: number;              // Scrap Barge property: 5000
+  scrapUnits?: number;                 // Scrap hold units currently loaded (0 to 3)
+  scrapUnitsMax?: number;              // Scrap hold capacity (3 units)
+  scrapCargo?: ScrapCargoItem[];       // Individual scrap items in hold
+  cleanupStance?: boolean;             // Autonomous scrap collection toggle
+  salvageState?: 'IDLE' | 'SEEKING_SCRAP' | 'COLLECTING' | 'RETURNING_TO_DEPOSIT';
+  salvageTargetId?: string | null;
+  salvageBeamTimer?: number;
+  firstDamageTime?: number;            // Timestamp when ship took first damage from 100% HP
+  permanentFrameDamageCap?: number;    // Permanent repair ceiling percentage (0.0 to 1.0)
   materialsStored?: {                  // Builder Unit property: 5,000 Metallic, 5,000 Organic, 5,000 Ore
     metallic: number;
     metallicMax: number;
@@ -649,6 +795,7 @@ export interface StarSystemDescriptor {
   id: string;
   index: number;
   name: string;
+  assignedFaction?: FactionId;
   center: { x: number; y: number };
   starRadius: number;
   deepSpaceBoundaryRadius: number; // 130,000 km outer perimeter
@@ -685,9 +832,11 @@ export type NavalUnitRole =
   | 'DESTROYER'
   | 'LIGHT_CRUISER'
   | 'HEAVY_CRUISER'
+  | 'CRUISER'
   | 'BATTLECRUISER'
   | 'BATTLESHIP'
   | 'DREADNOUGHT'
+  | 'CITY_SHIP'
   | 'MINER'
   | 'COLLIER'
   | 'TANKER'
@@ -697,6 +846,9 @@ export type NavalUnitRole =
   | 'SALVAGER'
   | 'CARRIER'
   | 'SUPER_CARRIER'
+  | 'LIAAL_LIGHT'
+  | 'LIAAL_MEDIUM'
+  | 'LIAAL_HEAVY'
   | 'VANGUARD';
 
 export interface ProductionQueueItem {
@@ -704,10 +856,26 @@ export interface ProductionQueueItem {
   unitRole: NavalUnitRole;
   name: string;
   code?: string;
+  shipClass?: string;
+  commissionerFaction?: FactionId;
+  proxyFaction?: FactionId;
   buildTimeTotal: number;
   buildTimeRemaining: number;
   costMetallic: number;
   costOrganic: number;
+  costNeridium?: number;
+}
+
+export interface ResourceInventory {
+  ore: number;
+  metallic: number;
+  organic: number;
+  neridium: number;
+}
+
+export interface RefineryProgressState {
+  oreAccumulator: number;      // Tracks raw ore processed toward the 5,000 threshold
+  totalNeridiumExtracted: number;
 }
 
 export interface HQResources {
@@ -717,6 +885,8 @@ export interface HQResources {
   maxMetallic: number;  // 100,000
   organic: number;
   maxOrganic: number;   // 100,000
+  neridium?: number;
+  maxNeridium?: number;
 }
 
 export type MissileStatus = 'TRACKING' | 'SPOOFED' | 'OVERFLIGHT';
@@ -834,12 +1004,14 @@ export interface CombatLogEntry {
     | 'UNREP'
     | 'MICROJUMP'
     | 'ORDNANCE'
+    | 'ENERGY'
     | 'TACTICAL'
     | 'RESOURCE'
     | 'LOGISTICS'
     | 'RESEARCH'
     | 'RADAR'
     | 'BUILDER'
+    | 'SALVAGE'
     | 'NAV'
     | 'COMBAT'
     | 'STANCE';
@@ -848,6 +1020,8 @@ export interface CombatLogEntry {
   category?: string;
   message?: string;
   timestamp?: string;
+  isPlayerOwned?: boolean; // true = generated by or directly involving player-owned units; false = non-player NPC/hostile/ambient
+  sourceFaction?: string;
 }
 
 export interface SimBenchmark {
@@ -898,3 +1072,37 @@ export interface SimulationConfig {
   hostileAutoFire: boolean;
   seed?: number;
 }
+
+export interface DebugState {
+  revealAllMap: boolean;      // Bypasses all sensor checks and fog-of-war masks
+  freeResearch: boolean;       // Research completes instantly with 0 cost
+}
+
+export interface GameState {
+  debugState?: DebugState;
+  resources?: {
+    metallic?: number;
+    organic?: number;
+    neridium?: number;
+    maxNeridium?: number;
+    maxMetallic?: number;
+    maxOrganic?: number;
+    [key: string]: any;
+  };
+  research?: {
+    completedTechIds: string[];
+    activeTechId: string | null;
+    progress: number;
+    [key: string]: any;
+  };
+  unlockedTechs?: Set<string>;
+  notifications?: Array<{
+    id: string;
+    type: string;
+    message: string;
+    timestamp?: number | string;
+  }>;
+  simulationTick?: number;
+  [key: string]: any;
+}
+

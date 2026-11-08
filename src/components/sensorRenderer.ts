@@ -53,13 +53,18 @@ export function renderTacticalRangeReticles(
     const unitRadarR = ship.radarRadius || activeRadarR;
     const unitPassiveR = ship.passiveRadius || passiveSensorR;
 
-    // Calculate screen radii
-    const radarScreenR = unitRadarR * cam.zoom;
-    const passiveScreenR = unitPassiveR * cam.zoom;
-    const missileR = ranges.effectiveMissileRange * cam.zoom;
-    const cmR = ranges.effectiveCMRange * cam.zoom;
-    const beamR = ranges.effectiveBeamRange * cam.zoom;
-    const pdR = ranges.effectivePDRange * cam.zoom;
+    // For Garn Homeworld Ring HQ, range radii project outward from the physical ring edge pixels
+    const isGarnRing = Boolean(ship.isGarnRing || (ship.role === 'HQ' && (ship.factionId === 'GARN' || (ship.faction as any) === 'GARN')));
+    const ringEdgeWorld = isGarnRing ? (ship.radius || 700) : 0;
+    const ringEdgeScreen = ringEdgeWorld * cam.zoom;
+
+    // Calculate screen radii from the edge pixels out
+    const radarScreenR = unitRadarR * cam.zoom + ringEdgeScreen;
+    const passiveScreenR = unitPassiveR * cam.zoom + ringEdgeScreen;
+    const missileR = ranges.effectiveMissileRange * cam.zoom + ringEdgeScreen;
+    const cmR = ranges.effectiveCMRange * cam.zoom + ringEdgeScreen;
+    const beamR = ranges.effectiveBeamRange * cam.zoom + ringEdgeScreen;
+    const pdR = ranges.effectivePDRange * cam.zoom + ringEdgeScreen;
 
     // Viewport intersection test for the outer passive sensor horizon
     if (

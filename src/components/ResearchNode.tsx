@@ -213,12 +213,17 @@ export const ResearchNode: React.FC<ResearchNodeProps> = ({
   const isResearching =
     nodeState.status === 'RESEARCHING' || nodeState.status === 'PAUSED_LACKING_CAPACITY';
   const isPausedCapacity = nodeState.status === 'PAUSED_LACKING_CAPACITY';
+  const isQueued = nodeState.status === 'QUEUED';
+  const qPos = typeof engine?.researchManager?.getQueuePosition === 'function'
+    ? engine.researchManager.getQueuePosition(node.id)
+    : null;
   const isCompleted = nodeState.status === 'COMPLETED';
   const isInsufficientMaterials =
     (hasMetallicDeficit || hasOrganicDeficit || nodeState.status === 'UNAVAILABLE') &&
     !isCompleted &&
-    !isResearching;
-  const isAvailable = (nodeState.status === 'AVAILABLE' || (!isLocked && !isCompleted && !isResearching)) && !isInsufficientMaterials;
+    !isResearching &&
+    !isQueued;
+  const isAvailable = (nodeState.status === 'AVAILABLE' || (!isLocked && !isCompleted && !isResearching && !isQueued)) && !isInsufficientMaterials;
 
   // Branch-specific theme classes
   const getBranchClasses = () => {
@@ -263,9 +268,9 @@ export const ResearchNode: React.FC<ResearchNodeProps> = ({
       <button
         type="button"
         id={`tech-icon-${node.id}`}
-        aria-label={isInsufficientMaterials ? 'UNAVAILABLE: INSUFFICIENT MATERIALS' : undefined}
+        aria-label={isInsufficientMaterials ? 'UNAVAILABLE: INSUFFICIENT MATERIALS' : isQueued ? `QUEUED #${qPos?.position || 1}` : undefined}
         onClick={() => {
-          if (isResearching) {
+          if (isResearching || isQueued) {
             onCancel?.(node.id, node.branch);
             return;
           }
@@ -299,6 +304,8 @@ export const ResearchNode: React.FC<ResearchNodeProps> = ({
             ? isPausedCapacity
               ? 'bg-slate-900 border-2 border-amber-500 shadow-[0_0_15px_rgba(245,158,11,0.5)] animate-pulse cursor-pointer'
               : `bg-slate-900 border-2 ${branchStyles.availableBorder} cursor-pointer hover:border-rose-400`
+            : isQueued
+            ? 'bg-amber-950/50 border-2 border-dashed border-amber-400/90 shadow-[0_0_14px_rgba(245,158,11,0.45)] cursor-pointer hover:border-rose-400 hover:bg-rose-950/40'
             : isInsufficientMaterials
             ? 'bg-slate-950/80 border border-rose-500/60 opacity-60 cursor-not-allowed shadow-[0_0_8px_rgba(255,51,68,0.2)]'
             : isAvailable
@@ -313,6 +320,8 @@ export const ResearchNode: React.FC<ResearchNodeProps> = ({
               ? 'text-white drop-shadow-[0_0_6px_rgba(255,255,255,0.7)]'
               : isResearching
               ? 'text-cyan-300 animate-pulse'
+              : isQueued
+              ? 'text-amber-300 animate-pulse'
               : isInsufficientMaterials
               ? 'text-rose-400/80'
               : isAvailable
@@ -338,15 +347,22 @@ export const ResearchNode: React.FC<ResearchNodeProps> = ({
           <AlertTriangle className="w-2.5 h-2.5 text-amber-400 absolute top-1 right-1 animate-bounce" />
         )}
 
-        {/* STATUS 4: INSUFFICIENT MATERIALS WARNING DOT */}
-        {isInsufficientMaterials && (
+        {/* STATUS 4: QUEUED BADGE */}
+        {isQueued && (
+          <div className="absolute -top-1.5 -right-1.5 px-1 py-0.2 bg-amber-400 text-slate-950 font-mono font-black text-[8px] rounded border border-amber-200 shadow-md flex items-center gap-0.5">
+            Q#{qPos?.position || 1}
+          </div>
+        )}
+
+        {/* STATUS 5: INSUFFICIENT MATERIALS WARNING DOT */}
+        {isInsufficientMaterials && !isQueued && (
           <span
             className="absolute top-1 right-1 w-2 h-2 rounded-full bg-rose-500 ring-2 ring-rose-950 animate-pulse"
             title="UNAVAILABLE: INSUFFICIENT MATERIALS"
           />
         )}
 
-        {/* STATUS 5: RESEARCHING PROGRESS FILL ALONG BOTTOM EDGE */}
+        {/* STATUS 6: RESEARCHING PROGRESS FILL ALONG BOTTOM EDGE */}
         {isResearching && (
           <>
             <span className="absolute top-0.5 right-1 text-[8px] font-mono font-bold text-cyan-200">

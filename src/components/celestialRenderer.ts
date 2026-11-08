@@ -20,7 +20,8 @@ import { CanvasLodTier, getCanvasLodTier } from '../simulation/cameraController'
 /**
  * Converts a hex color (#rrggbb or #rgb) to an rgba(r, g, b, alpha) string.
  */
-export function hexToRgba(hex: string, alpha: number): string {
+export function hexToRgba(hex: string | undefined | null, alpha: number): string {
+  if (!hex || typeof hex !== 'string') return `rgba(254, 240, 138, ${alpha})`;
   let c = hex.replace('#', '');
   if (c.length === 3) {
     c = c.split('').map((ch) => ch + ch).join('');
@@ -78,8 +79,9 @@ export function getOrCreatePlanetTexture(
 ): HTMLCanvasElement {
   const isHabitable = Boolean(planet.isHabitable ?? planet.habitable);
   const isHydrogenRich = Boolean(planet.isHydrogenRich ?? planet.hydrogen);
+  const isIce = Boolean((planet as any).planetClass === 'ICE' || (planet as any).planetType === 'ICE' || (planet as any).isIceWorld || String(planet.id).includes('ICE') || ((planet as any).name && (planet as any).name.includes('Kryos')));
   const planetType: 'ROCKY' | 'GAS_GIANT' = planet.type ?? (isHydrogenRich ? 'GAS_GIANT' : 'ROCKY');
-  const cacheKey = `${planet.id}_${planetType}_${isHabitable}_${isHydrogenRich}`;
+  const cacheKey = `${planet.id}_${planetType}_${isHabitable}_${isHydrogenRich}_${isIce}`;
   const existing = planetCache.get(cacheKey);
   if (existing) return existing;
 
@@ -128,7 +130,22 @@ export function getOrCreatePlanetTexture(
 
         let red = 0, green = 0, blue = 0;
 
-        if (isPolar && elevation > 0.38) {
+        if (isIce) {
+          // --- YESTIRI ICE WORLD (GLACIAL / CRYO-CRYSTALLINE HABITABLE WORLD) ---
+          if (elevation < 0.40) {
+            // Sub-surface deep azure ocean rifts
+            red = 14; green = 80; blue = 145;
+          } else if (elevation < 0.52) {
+            // Azure glacial shelf
+            red = 38; green = 140; blue = 210;
+          } else if (elevation < 0.68) {
+            // Pack ice & frost plains
+            red = 165; green = 225; blue = 250;
+          } else {
+            // High crystalline glacial mountain ridges
+            red = 230; green = 245; blue = 255;
+          }
+        } else if (isPolar && elevation > 0.38) {
           // Polar Ice Sheets
           red = 220; green = 238; blue = 245;
         } else if (elevation < 0.46) {
@@ -150,10 +167,11 @@ export function getOrCreatePlanetTexture(
 
         // Atmospheric Swirling Clouds Layer
         const cn = cloudNoise(u * 8 + v * 2, v * 8);
-        if (cn > 0.58) {
-          const cloudAlpha = Math.min(1.0, (cn - 0.58) * 3.5);
-          red = red * (1 - cloudAlpha) + 245 * cloudAlpha;
-          green = green * (1 - cloudAlpha) + 250 * cloudAlpha;
+        const cloudThreshold = isIce ? 0.52 : 0.58;
+        if (cn > cloudThreshold) {
+          const cloudAlpha = Math.min(1.0, (cn - cloudThreshold) * 3.5);
+          red = red * (1 - cloudAlpha) + (isIce ? 220 : 245) * cloudAlpha;
+          green = green * (1 - cloudAlpha) + (isIce ? 240 : 250) * cloudAlpha;
           blue = blue * (1 - cloudAlpha) + 255 * cloudAlpha;
         }
 
@@ -268,7 +286,10 @@ export function drawEnhancedPlanet(
     // Glow radiates outward from R to 1.35x R
     const glowR = screenR * 1.35;
     const glowGrad = ctx.createRadialGradient(screenX, screenY, screenR * 0.95, screenX, screenY, glowR);
-    const glowColor = isHabitable
+    const isIce = Boolean(planet.planetClass === 'ICE' || planet.planetType === 'ICE' || planet.isIceWorld || String(planet.id).includes('ICE') || (planet.name && planet.name.includes('Kryos')));
+    const glowColor = isIce
+      ? 'rgba(103, 232, 249,'
+      : isHabitable
       ? 'rgba(0, 180, 255,'
       : isHydrogenRich
         ? 'rgba(0, 240, 210,'
@@ -336,13 +357,19 @@ export function renderSolarSystem(
     renderTheaterPerimeter(ctx, solarSystem.arenaRadius, origin, cam, width, height, worldToScreen);
     renderFtlInterdictionZone(ctx, solarSystem.beltRadiusMax || 16000, origin, cam, width, height, worldToScreen, jumpModeActive);
 
-    // 2. Planetary Orbital Tracks
+    // 2. Asteroid Belt Annular Zone & Cluster Gravity Wells
+    renderAsteroidBeltAnnulus(ctx, solarSystem.beltRadiusMin, solarSystem.beltRadiusMax, solarSystem.asteroidCount, origin, cam, width, height, worldToScreen);
+    if (solarSystem.clusters && solarSystem.clusters.length > 0) {
+      renderAsteroidClusters(ctx, solarSystem.clusters, cam, width, height, worldToScreen);
+    }
+
+    // 3. Planetary Orbital Tracks
     renderOrbitalTracks(ctx, solarSystem, origin, cam, width, height, worldToScreen);
 
-    // 3. Central Star with glowing corona and identifier
+    // 4. Central Star with glowing corona and identifier
     renderCentralStar(ctx, solarSystem.star, cam, width, height, worldToScreen, now);
 
-    // 4. Planet Icons & high-contrast cyan hairline dashed gravity well circles
+    // 5. Planet Icons & high-contrast cyan hairline dashed gravity well circles
     for (const planet of solarSystem.rockyPlanets) {
       renderPlanetOverview(ctx, planet, cam, width, height, worldToScreen);
     }
@@ -543,7 +570,30 @@ function renderPlanetOverview(
   // 2. Planet Icon (crisp high-contrast marker)
   const isPrimary = (planet as RockyPlanet).isPrimaryHabitable;
   const isColony = (planet as RockyPlanet).colonized;
+  const isGarnHomeworld = Boolean(
+    (planet as any).isHomeworld ||
+    (planet as any).hasHQ ||
+    (planet as any).isGarnRing ||
+    (planet.name && planet.name.toLowerCase().includes('garn'))
+  );
   const iconRadius = 4.5;
+
+  // For Garn Homeworld, render the colossal equatorial planetary ring in System Overview LOD
+  if (isGarnHomeworld) {
+    ctx.strokeStyle = '#22c55e';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(px, py, iconRadius * 2.3, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 1.0;
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.arc(px, py, iconRadius * 2.9, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
 
   ctx.fillStyle = isPrimary ? '#38bdf8' : isColony ? '#34d399' : planet.baseColor || '#94a3b8';
   ctx.beginPath();
@@ -556,10 +606,11 @@ function renderPlanetOverview(
   ctx.stroke();
 
   // Planet icon label
-  ctx.fillStyle = isPrimary ? '#38bdf8' : isColony ? '#34d399' : '#cbd5e1';
+  ctx.fillStyle = isGarnHomeworld ? '#4ade80' : isPrimary ? '#38bdf8' : isColony ? '#34d399' : '#cbd5e1';
   ctx.font = 'bold 8px monospace';
   ctx.textAlign = 'center';
-  ctx.fillText(planet.name.toUpperCase(), px, py - iconRadius - 5);
+  const labelText = isGarnHomeworld ? `${planet.name.toUpperCase()} [RING HQ]` : planet.name.toUpperCase();
+  ctx.fillText(labelText, px, py - iconRadius - (isGarnHomeworld ? 9 : 5));
 
   ctx.restore();
 }
@@ -772,7 +823,7 @@ export function drawClusterGravityWells(
 
   for (let i = 0; i < clusters.length; i++) {
     const cluster = clusters[i];
-    const wellRadius = cluster.gravityWellRadius || cluster.wellRadius || 2500;
+    const wellRadius = cluster.gravityWellRadius || cluster.wellRadius || Math.round((cluster.radius || 2200) * 1.10);
 
     // Bounds check in world space
     if (
@@ -1188,9 +1239,9 @@ function drawSolarAtmosphere(
   ctx.save();
   ctx.globalCompositeOperation = 'screen';
 
-  // 1. High-Density Inner Chromosphere Ring
-  const innerCoronaR = screenR * 1.45;
-  const innerGrad = ctx.createRadialGradient(screenX, screenY, screenR * 0.85, screenX, screenY, innerCoronaR);
+  // 1. High-Density Inner Chromosphere Ring (capped for performance at deep zoom in)
+  const innerCoronaR = Math.min(screenR * 1.45, screenR + 800);
+  const innerGrad = ctx.createRadialGradient(screenX, screenY, Math.min(screenR * 0.85, screenR), screenX, screenY, innerCoronaR);
   innerGrad.addColorStop(0.0, `${palette.coronaColor} 0.85)`);
   innerGrad.addColorStop(0.35, `${palette.coronaColor} 0.45)`);
   innerGrad.addColorStop(1.0, `${palette.coronaColor} 0.0)`);
@@ -1200,9 +1251,9 @@ function drawSolarAtmosphere(
   ctx.arc(screenX, screenY, innerCoronaR, 0, Math.PI * 2);
   ctx.fill();
 
-  // 2. Wide Radiant Coronal Envelope
-  const outerCoronaR = screenR * 3.8;
-  const outerGrad = ctx.createRadialGradient(screenX, screenY, screenR * 1.1, screenX, screenY, outerCoronaR);
+  // 2. Wide Radiant Coronal Envelope (capped for performance at deep zoom in)
+  const outerCoronaR = Math.min(screenR * 3.8, screenR + 2200);
+  const outerGrad = ctx.createRadialGradient(screenX, screenY, Math.min(screenR * 1.1, screenR + 200), screenX, screenY, outerCoronaR);
   outerGrad.addColorStop(0.0, `${palette.coronaColor} 0.28)`);
   outerGrad.addColorStop(0.4, `${palette.coronaColor} 0.08)`);
   outerGrad.addColorStop(1.0, `${palette.coronaColor} 0.0)`);
@@ -1213,8 +1264,8 @@ function drawSolarAtmosphere(
   ctx.fill();
 
   // 3. Four-Point Anamorphic / Diffraction Rays
-  const rayLength = screenR * 4.2;
-  const rayWidth = Math.max(1.2, screenR * 0.04);
+  const rayLength = Math.min(screenR * 4.2, 2800);
+  const rayWidth = Math.min(Math.max(1.2, screenR * 0.04), 22);
   const slowRotation = tick * 0.0015;
 
   ctx.strokeStyle = `${palette.rayColor} 0.22)`;
@@ -1680,13 +1731,18 @@ function renderRings(
   opacity: number,
   behind: boolean
 ) {
+  if (outerR <= 0.1 || innerR < 0 || !isFinite(outerR) || !isFinite(innerR)) {
+    return;
+  }
   ctx.save();
   ctx.beginPath();
   const startAngle = behind ? Math.PI : 0;
   const endAngle = behind ? Math.PI * 2 : Math.PI;
 
-  ctx.ellipse(cx, cy, outerR, outerR * 0.38, -0.35, startAngle, endAngle);
-  ctx.ellipse(cx, cy, innerR, innerR * 0.38, -0.35, endAngle, startAngle, true);
+  const safeOuterR = Math.max(0.1, outerR);
+  const safeInnerR = Math.max(0.1, innerR);
+  ctx.ellipse(cx, cy, safeOuterR, Math.max(0.1, safeOuterR * 0.38), -0.35, startAngle, endAngle);
+  ctx.ellipse(cx, cy, safeInnerR, Math.max(0.1, safeInnerR * 0.38), -0.35, endAngle, startAngle, true);
   ctx.closePath();
 
   ctx.fillStyle = `rgba(217, 119, 6, ${opacity * 0.75})`;

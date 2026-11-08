@@ -1,5 +1,7 @@
 import { ShipEntity, MissileEntity, Vec2D } from '../types';
 import { BASE_TACTICAL_RANGES, TacticalRanges } from './sensorController';
+import { areEntitiesAllied } from './diplomacyController';
+import { state as globalGameState } from '../state/gameState';
 
 export { type TacticalRanges, BASE_TACTICAL_RANGES };
 
@@ -25,6 +27,51 @@ let scratchEnvelopeSq = 0;
 let scratchMaxPersistenceSq = 0;
 let scratchThreatDx = 0;
 let scratchThreatDy = 0;
+
+/**
+ * Determines whether two ships are hostile to one another.
+ * Rules:
+ * - Ships in different star systems cannot target or engage each other.
+ * - NPCs/pirates are default hostile to all except each other (NPCs never fight NPCs).
+ * - Sovereign factions (player vs AI factions, AI vs AI) are hostile if different factions unless diplomatically allied or on the same team.
+ */
+export function areShipsHostile(a: ShipEntity, b: ShipEntity): boolean {
+  if (!a || !b || a.id === b.id) return false;
+  if (a.hullState === 'DESTROYED' || b.hullState === 'DESTROYED') return false;
+  if ((a.hullHp !== undefined && a.hullHp <= 0) || (b.hullHp !== undefined && b.hullHp <= 0)) return false;
+
+  // Interstellar isolation: ships in different star systems cannot target each other
+  if (a.systemId && b.systemId && a.systemId !== b.systemId) {
+    return false;
+  }
+
+  // NPC / Pirate faction rule:
+  // "and the NPC's are default hostile to all except each other."
+  const aIsNpc = Boolean(a.isPirate || a.factionId === 'PIRATE' || (a.faction as string) === 'PIRATE' || a.id.startsWith('pirate-'));
+  const bIsNpc = Boolean(b.isPirate || b.factionId === 'PIRATE' || (b.faction as string) === 'PIRATE' || b.id.startsWith('pirate-'));
+
+  if (aIsNpc && bIsNpc) {
+    // NPCs never attack other NPCs!
+    return false;
+  }
+
+  if (aIsNpc || bIsNpc) {
+    // NPCs are default hostile to all non-NPC ships (player and sovereign AI factions alike)
+    return true;
+  }
+
+  // Check team and diplomacy alliance status
+  const diplomacyState = (globalGameState as any)?.diplomacyState;
+  if (areEntitiesAllied(a, b, diplomacyState)) {
+    return false;
+  }
+
+  // Non-NPC sovereign entities: evaluate faction tags
+  if (a.factionId && b.factionId) {
+    return a.factionId !== b.factionId;
+  }
+  return a.faction !== b.faction;
+}
 
 /**
  * Fast deterministic integer hash of ship ID without string splitting or array allocation
@@ -53,7 +100,7 @@ export function acquireTargets(
   simulationTick?: number,
   shipIndex?: number
 ): ShipEntity | null {
-  if (ship.hullState === 'DESTROYED') {
+  if (ship.hullState === 'DESTROYED' || ship.hullState === 'DISABLED') {
     ship.targetEntityId = null;
     return null;
   }
@@ -82,42 +129,51 @@ export function acquireTargets(
   const allShips = context.ships;
   const shipCount = allShips.length;
 
-  // 1. TARGET-STICKINESS CHECK
-  // If the ship already holds a designated target, verify its validity in O(1) to O(N) single-lookup
-  // without broad-phase scanning all hostiles.
-  if (ship.targetEntityId) {
-    for (let i = 0; i < shipCount; i++) {
-      const candidate = allShips[i];
-      if (candidate.id === ship.targetEntityId) {
-        const candidateAlive = candidate.hullState !== 'DESTROYED' && candidate.hullHp > 0;
-        const candidateHostile = candidate.faction !== ship.faction;
-        const disableAllowed = !(doctrine === 'DISABLE' && candidate.hullState === 'CRIPPLED');
-        const visualAllowed = !(
-          ship.faction === 'FRIENDLY' &&
-          context.isTargetInFriendlyVisualRange &&
-          !context.isTargetInFriendlyVisualRange(candidate.pos)
-        );
+    const isGarnRing = Boolean(ship.isGarnRing || (ship.role === 'HQ' && (ship.factionId === 'GARN' || (ship.faction as any) === 'GARN')));
+    const ringRadius = isGarnRing ? (ship.radius || 700) : 0;
 
-        if (candidateAlive && candidateHostile && disableAllowed && visualAllowed) {
-          scratchDx = candidate.pos.x - ship.pos.x;
-          scratchDy = candidate.pos.y - ship.pos.y;
-          scratchDistSq = scratchDx * scratchDx + scratchDy * scratchDy;
+    // 1. TARGET-STICKINESS CHECK
+    // If the ship already holds a designated target, verify its validity in O(1) to O(N) single-lookup
+    // without broad-phase scanning all hostiles.
+    if (ship.targetEntityId) {
+      for (let i = 0; i < shipCount; i++) {
+        const candidate = allShips[i];
+        if (candidate.id === ship.targetEntityId) {
+          const candidateAlive = candidate.hullState !== 'DESTROYED' && candidate.hullHp > 0;
+          const candidateHostile = areShipsHostile(ship, candidate);
+          const disableAllowed = !(doctrine === 'DISABLE' && (candidate.hullState === 'CRIPPLED' || candidate.hullState === 'DISABLED'));
+          const visualAllowed = !(
+            ship.faction === 'FRIENDLY' &&
+            context.isTargetInFriendlyVisualRange &&
+            !context.isTargetInFriendlyVisualRange(candidate.pos)
+          );
 
-          // Target remains within engagement envelope (or active radar envelope for NPC pursuit): keep lock!
-          const maxPersistSq = ship.npcPatrolState?.behaviorState === 'PURSUIT_ENGAGE'
-            ? Math.max(scratchMaxPersistenceSq, 8400.0 * 8400.0)
-            : scratchMaxPersistenceSq;
-          if (scratchDistSq <= maxPersistSq) {
-            return candidate;
+          if (candidateAlive && candidateHostile && disableAllowed && visualAllowed) {
+            scratchDx = candidate.pos.x - ship.pos.x;
+            scratchDy = candidate.pos.y - ship.pos.y;
+            if (ringRadius > 0) {
+              const rawDist = Math.hypot(scratchDx, scratchDy);
+              const effectiveDist = Math.max(0, rawDist - ringRadius);
+              scratchDistSq = effectiveDist * effectiveDist;
+            } else {
+              scratchDistSq = scratchDx * scratchDx + scratchDy * scratchDy;
+            }
+
+            // Target remains within engagement envelope (or active radar envelope for NPC pursuit): keep lock!
+            const maxPersistSq = ship.npcPatrolState?.behaviorState === 'PURSUIT_ENGAGE'
+              ? Math.max(scratchMaxPersistenceSq, 8400.0 * 8400.0)
+              : scratchMaxPersistenceSq;
+            if (scratchDistSq <= maxPersistSq) {
+              return candidate;
+            }
           }
+          break;
         }
-        break;
       }
-    }
 
-    // Target destroyed, crippled under DISABLE doctrine, or escaped 1.20x envelope
-    ship.targetEntityId = null;
-  }
+      // Target destroyed, crippled under DISABLE doctrine, or escaped 1.20x envelope
+      ship.targetEntityId = null;
+    }
 
   // 2. STAGGERED TARGET ACQUISITION SWEEPS
   // Non-firing ships offset broad-phase sweeps across 3 simulation tick slices (10Hz target refresh)
@@ -142,10 +198,10 @@ export function acquireTargets(
     // AGGRESSIVE: Lock onto the closest hostile within the engagement envelope
     for (let i = 0; i < shipCount; i++) {
       const candidate = allShips[i];
-      if (candidate.faction === ship.faction || candidate.hullState === 'DESTROYED' || candidate.hullHp <= 0) {
+      if (!areShipsHostile(ship, candidate)) {
         continue;
       }
-      if (doctrine === 'DISABLE' && candidate.hullState === 'CRIPPLED') {
+      if (doctrine === 'DISABLE' && (candidate.hullState === 'CRIPPLED' || candidate.hullState === 'DISABLED')) {
         continue;
       }
       if (
@@ -158,7 +214,13 @@ export function acquireTargets(
 
       scratchDx = candidate.pos.x - ship.pos.x;
       scratchDy = candidate.pos.y - ship.pos.y;
-      scratchDistSq = scratchDx * scratchDx + scratchDy * scratchDy;
+      if (ringRadius > 0) {
+        const rawDist = Math.hypot(scratchDx, scratchDy);
+        const effectiveDist = Math.max(0, rawDist - ringRadius);
+        scratchDistSq = effectiveDist * effectiveDist;
+      } else {
+        scratchDistSq = scratchDx * scratchDx + scratchDy * scratchDy;
+      }
 
       if (scratchDistSq <= scratchEnvelopeSq && scratchDistSq < scratchClosestDistSq) {
         scratchClosestDistSq = scratchDistSq;
@@ -178,10 +240,10 @@ export function acquireTargets(
 
     for (let i = 0; i < shipCount; i++) {
       const candidate = allShips[i];
-      if (candidate.faction === ship.faction || candidate.hullState === 'DESTROYED' || candidate.hullHp <= 0) {
+      if (!areShipsHostile(ship, candidate)) {
         continue;
       }
-      if (doctrine === 'DISABLE' && candidate.hullState === 'CRIPPLED') {
+      if (doctrine === 'DISABLE' && (candidate.hullState === 'CRIPPLED' || candidate.hullState === 'DISABLED')) {
         continue;
       }
       if (
@@ -194,7 +256,13 @@ export function acquireTargets(
 
       scratchDx = candidate.pos.x - ship.pos.x;
       scratchDy = candidate.pos.y - ship.pos.y;
-      scratchDistSq = scratchDx * scratchDx + scratchDy * scratchDy;
+      if (ringRadius > 0) {
+        const rawDistDef = Math.hypot(scratchDx, scratchDy);
+        const effectiveDistDef = Math.max(0, rawDistDef - ringRadius);
+        scratchDistSq = effectiveDistDef * effectiveDistDef;
+      } else {
+        scratchDistSq = scratchDx * scratchDx + scratchDy * scratchDy;
+      }
       if (scratchDistSq > scratchEnvelopeSq) continue;
 
       let isActivelyAttacking = candidate.targetEntityId === ship.id;
@@ -203,22 +271,24 @@ export function acquireTargets(
       if (!isActivelyAttacking && candidate.targetEntityId) {
         for (let a = 0; a < shipCount; a++) {
           const ally = allShips[a];
-          if (ally.faction === ship.faction && ally.id === candidate.targetEntityId && ally.hullState !== 'DESTROYED') {
-            scratchThreatDx = ally.pos.x - ship.pos.x;
-            scratchThreatDy = ally.pos.y - ship.pos.y;
-            if (scratchThreatDx * scratchThreatDx + scratchThreatDy * scratchThreatDy <= defensiveSphereSq) {
-              isActivelyAttacking = true;
-              break;
+          if (ally.id === candidate.targetEntityId) {
+            if (!areShipsHostile(ship, ally) && ally.hullState !== 'DESTROYED') {
+              scratchThreatDx = ally.pos.x - ship.pos.x;
+              scratchThreatDy = ally.pos.y - ship.pos.y;
+              if (scratchThreatDx * scratchThreatDx + scratchThreatDy * scratchThreatDy <= defensiveSphereSq) {
+                isActivelyAttacking = true;
+              }
             }
+            break;
           }
         }
       }
 
       // Check in-flight missiles originating from this hostile targeting this ship
-      if (!isActivelyAttacking) {
+      if (!isActivelyAttacking && missileCount > 0) {
         for (let m = 0; m < missileCount; m++) {
           const mis = missiles[m];
-          if (mis.alive && mis.sourceShipId === candidate.id && mis.targetId === ship.id) {
+          if (mis && mis.alive && mis.sourceShipId === candidate.id && mis.targetId === ship.id) {
             isActivelyAttacking = true;
             break;
           }

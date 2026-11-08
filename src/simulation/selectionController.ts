@@ -37,6 +37,27 @@ export function raycastSelectShip(
       continue;
     }
 
+    // Annular Megastructure Ring Check (e.g. Garn Ring Citadel)
+    const isRing = Boolean(ship.isRingStructure || ship.hqType === 'GARN_RING_CITADEL' || ship.isGarnRing);
+    if (isRing) {
+      const ringOuter = ship.ringOuterRadius || ship.radius || 1100;
+      const ringInner = ship.ringInnerRadius || (ringOuter * (1.40 / 1.68));
+      const tol = Math.max(35, minWorldTolerance);
+      const distFromCenter = Math.hypot(worldMouse.x - ship.pos.x, worldMouse.y - ship.pos.y);
+
+      // Only hit if cursor is on or adjacent to the ring annulus (not in the planet core)
+      if (distFromCenter >= (ringInner - tol) && distFromCenter <= (ringOuter + tol)) {
+        const ringMid = (ringInner + ringOuter) * 0.5;
+        const distToRing = Math.abs(distFromCenter - ringMid);
+        const distToRingSq = distToRing * distToRing;
+        if (distToRingSq < bestDistanceSq) {
+          bestDistanceSq = distToRingSq;
+          bestCandidate = ship;
+        }
+      }
+      continue;
+    }
+
     const spec = getShipHullSpec(ship);
     const explicitRadius = ship.selectionRadius ?? spec.selectionRadiusPx;
 
@@ -93,6 +114,25 @@ export function marqueeSelectShips(
     }
 
     if (options?.filterHostileFog && options.filterHostileFog(ship)) {
+      continue;
+    }
+
+    const isRing = Boolean(ship.isRingStructure || ship.hqType === 'GARN_RING_CITADEL' || ship.isGarnRing);
+    if (isRing) {
+      const ringOuter = ship.ringOuterRadius || ship.radius || 1100;
+      const ringInner = ship.ringInnerRadius || (ringOuter * (1.40 / 1.68));
+      const closestX = Math.max(normalizedBox.minX, Math.min(normalizedBox.maxX, ship.pos.x));
+      const closestY = Math.max(normalizedBox.minY, Math.min(normalizedBox.maxY, ship.pos.y));
+      const minDist = Math.hypot(closestX - ship.pos.x, closestY - ship.pos.y);
+      const maxDist = Math.max(
+        Math.hypot(normalizedBox.minX - ship.pos.x, normalizedBox.minY - ship.pos.y),
+        Math.hypot(normalizedBox.maxX - ship.pos.x, normalizedBox.minY - ship.pos.y),
+        Math.hypot(normalizedBox.minX - ship.pos.x, normalizedBox.maxY - ship.pos.y),
+        Math.hypot(normalizedBox.maxX - ship.pos.x, normalizedBox.maxY - ship.pos.y)
+      );
+      if (minDist <= ringOuter && maxDist >= ringInner) {
+        selected.push(ship);
+      }
       continue;
     }
 

@@ -163,6 +163,7 @@ export interface SensorEmitter {
   radarRangeSq: number;
   passiveRange: number;
   passiveRangeSq: number;
+  systemId?: string;
 }
 
 export interface GameState {
@@ -243,6 +244,8 @@ export const fleetBoundingSphere: FleetSensorBoundingSphere = {
   emitterCount: 0,
 };
 
+export const ACTIVE_FRIENDLY_SYSTEMS = new Set<string>();
+
 /**
  * Identifies all allied active sensor emitters (ships, structures, stations) and computes
  * their effective radar (8,400 km) and passive (25,200 km) envelopes.
@@ -251,6 +254,7 @@ export const fleetBoundingSphere: FleetSensorBoundingSphere = {
 export function getAlliedSensorEmitters(state: GameState): SensorEmitter[] {
   EMITTERS_SCRATCH.length = 0;
   VISITED_EMITTER_IDS.clear();
+  ACTIVE_FRIENDLY_SYSTEMS.clear();
 
   const ships = state.ships;
   const radarMult = state.sensorRangeMult ?? state.combatModifiers?.sensorRangeMult ?? 1.0;
@@ -270,6 +274,7 @@ export function getAlliedSensorEmitters(state: GameState): SensorEmitter[] {
       if (!s || s.faction !== 'FRIENDLY' || s.hullState === 'DESTROYED' || s.isUnderConstruction) continue;
       if (VISITED_EMITTER_IDS.has(s.id)) continue;
       VISITED_EMITTER_IDS.add(s.id);
+      if (s.systemId) ACTIVE_FRIENDLY_SYSTEMS.add(s.systemId);
 
       if (emitterCount >= MAX_EMITTERS) break;
       const em = EMITTER_POOL[emitterCount++];
@@ -281,6 +286,7 @@ export function getAlliedSensorEmitters(state: GameState): SensorEmitter[] {
       em.radarRangeSq = radarRangeSq;
       em.passiveRange = passiveRange;
       em.passiveRangeSq = passiveRangeSq;
+      em.systemId = s.systemId;
       EMITTERS_SCRATCH.push(em);
     }
   }
@@ -292,6 +298,7 @@ export function getAlliedSensorEmitters(state: GameState): SensorEmitter[] {
       if (!st || st.faction !== 'FRIENDLY' || st.hullState === 'DESTROYED' || st.isUnderConstruction) continue;
       if (VISITED_EMITTER_IDS.has(st.id)) continue;
       VISITED_EMITTER_IDS.add(st.id);
+      if (st.systemId) ACTIVE_FRIENDLY_SYSTEMS.add(st.systemId);
 
       if (emitterCount >= MAX_EMITTERS) break;
       const em = EMITTER_POOL[emitterCount++];
@@ -303,6 +310,7 @@ export function getAlliedSensorEmitters(state: GameState): SensorEmitter[] {
       em.radarRangeSq = radarRangeSq;
       em.passiveRange = passiveRange;
       em.passiveRangeSq = passiveRangeSq;
+      em.systemId = st.systemId;
       EMITTERS_SCRATCH.push(em);
     }
   }
@@ -462,11 +470,26 @@ export function updateSensorsAndFogOfWar(state: GameState, simulationTick?: numb
 
   for (let j = 0, hLen = hostiles.length; j < hLen; j++) {
     const target = hostiles[j];
-    if (!target || target.faction === 'FRIENDLY') continue;
+    if (!target) continue;
+
+    if (target.faction === 'FRIENDLY' || (target.faction as string) === 'PLAYER') {
+      target.visibilityState = 'RESOLVED';
+      target.visibilityTier = 'RADAR';
+      (target as any).radarIdentified = true;
+      continue;
+    }
 
     const isAlive = target.isAlive !== undefined ? target.isAlive : target.hullState !== 'DESTROYED';
     if (!isAlive) {
       target.visibilityState = 'HIDDEN';
+      target.visibilityTier = 'NONE';
+      continue;
+    }
+
+    if (state.debugState?.revealAllMap || (state as any).state?.debugState?.revealAllMap) {
+      target.visibilityState = 'RESOLVED';
+      target.visibilityTier = 'RADAR';
+      (target as any).radarIdentified = true;
       continue;
     }
 
@@ -479,6 +502,14 @@ export function updateSensorsAndFogOfWar(state: GameState, simulationTick?: numb
 
     if (emitterCount === 0) {
       target.visibilityState = 'HIDDEN';
+      target.visibilityTier = 'NONE';
+      continue;
+    }
+
+    // Interstellar sensor isolation: If target belongs to a star system where player has no emitters, it is hidden in O(1)
+    if (ACTIVE_FRIENDLY_SYSTEMS.size > 0 && target.systemId && !ACTIVE_FRIENDLY_SYSTEMS.has(target.systemId)) {
+      target.visibilityState = 'HIDDEN';
+      target.visibilityTier = 'NONE';
       continue;
     }
 
@@ -490,6 +521,7 @@ export function updateSensorsAndFogOfWar(state: GameState, simulationTick?: numb
 
     if (distToCentroidSq > maxPassiveSq) {
       target.visibilityState = 'HIDDEN';
+      target.visibilityTier = 'NONE';
       continue;
     }
 
@@ -515,8 +547,11 @@ export function updateSensorsAndFogOfWar(state: GameState, simulationTick?: numb
 
     if (isInsideActiveRadar) {
       target.visibilityState = 'RESOLVED';
+      target.visibilityTier = 'RADAR';
+      (target as any).radarIdentified = true;
     } else if (isInsidePassive) {
       target.visibilityState = 'BLIP_ONLY';
+      target.visibilityTier = 'PASSIVE';
       const rcsWeight = resolveRCSWeight(target);
       target.rcsWeight = rcsWeight;
 
@@ -532,6 +567,49 @@ export function updateSensorsAndFogOfWar(state: GameState, simulationTick?: numb
       }
     } else {
       target.visibilityState = 'HIDDEN';
+      target.visibilityTier = 'NONE';
+    }
+  }
+
+  // Evaluate visibility for missiles and torpedoes with spatial partitioning
+  if (state.missiles && state.missiles.length > 0) {
+    const missiles = state.missiles;
+    const mLen = missiles.length;
+    for (let mIdx = 0; mIdx < mLen; mIdx++) {
+      const m = missiles[mIdx];
+      if (!m || !m.alive) continue;
+      if (m.faction === 'FRIENDLY' || m.faction === 'PLAYER') {
+        m.visibilityTier = 'RADAR';
+        continue;
+      }
+      const mx = m.pos ? m.pos.x : (m.x ?? 0);
+      const my = m.pos ? m.pos.y : (m.y ?? 0);
+      m.x = mx;
+      m.y = my;
+      if (emitterCount === 0) {
+        m.visibilityTier = 'NONE';
+        continue;
+      }
+      const dxCent = mx - centX;
+      const dyCent = my - centY;
+      if (dxCent * dxCent + dyCent * dyCent > maxPassiveSq) {
+        m.visibilityTier = 'NONE';
+        continue;
+      }
+      let mTier: 'NONE' | 'PASSIVE' | 'RADAR' = 'NONE';
+      for (let i = 0; i < emitterCount; i++) {
+        const em = emitters[i];
+        const dx = mx - em.x;
+        const dy = my - em.y;
+        const distSq = dx * dx + dy * dy;
+        if (distSq <= em.radarRangeSq) {
+          mTier = 'RADAR';
+          break;
+        } else if (distSq <= em.passiveRangeSq) {
+          mTier = 'PASSIVE';
+        }
+      }
+      m.visibilityTier = mTier;
     }
   }
 

@@ -1,4 +1,5 @@
 import { ShipEntity } from '../types';
+import { FACTION_REGISTRY } from '../simulation/factions/factionRegistry';
 import {
   renderMilitaryResearchStation,
   renderCivicResearchOutpost,
@@ -7,6 +8,11 @@ import {
   renderMediumShipyard,
   renderHeavyShipyard,
   renderStructureByRoleOrType,
+  renderGarnSystemMissilePod,
+  renderGarnHQStructure,
+  renderAldonahForgeCitadel,
+  renderLiaalAgroCitadel,
+  renderKovakSwarmBastion,
 } from './structureRenderer';
 
 /**
@@ -26,6 +32,38 @@ export const UNSC_PALETTE = {
   runwayPlate: '#232932',            // Low-reflectivity tarmac surface
   elevatorHatch: '#181d24',          // Recessed elevator pad
 };
+
+/**
+ * Resolves dynamic primary, accent, and chamfer colors based on ship.factionId
+ */
+export function getShipFactionColors(
+  ship: any,
+  isHostile: boolean,
+  isCrippled: boolean = false
+): { primaryColor: string; accentColor: string; chamferColor: string } {
+  if (isCrippled) {
+    return {
+      primaryColor: '#ff2222',
+      accentColor: '#ef4444',
+      chamferColor: '#6b434a',
+    };
+  }
+
+  if (ship?.factionId && FACTION_REGISTRY[ship.factionId]) {
+    const meta = FACTION_REGISTRY[ship.factionId];
+    return {
+      primaryColor: meta.primaryColor,
+      accentColor: meta.accentColor,
+      chamferColor: isHostile ? meta.accentColor : UNSC_PALETTE.armorChamfer,
+    };
+  }
+
+  return {
+    primaryColor: isHostile ? '#f43f5e' : '#00f0ff',
+    accentColor: isHostile ? '#fb7185' : '#38bdf8',
+    chamferColor: isHostile ? '#6b434a' : UNSC_PALETTE.armorChamfer,
+  };
+}
 
 /**
  * Standard UNSC Style Warship Hull Primitive Drawer
@@ -90,6 +128,98 @@ export function drawUNSCStyleWarship(
 }
 
 /**
+ * Evaluates whether an entity is a Citadel (HQ Citadel starbases, Expansion Citadels, Pirate Bastions).
+ * Scale must NOT be modified (strictly 1:1 scale).
+ */
+export function isCitadelEntity(ship: any): boolean {
+  if (!ship) return false;
+  const role = (ship.role || '').toUpperCase();
+  const sType = ((ship.structureType || '') as string).toUpperCase();
+  const sCode = ((ship.code || '') as string).toUpperCase();
+  const id = ((ship.id || '') as string).toLowerCase();
+  const hqType = (ship.hqType || '').toUpperCase();
+
+  // 1. Headquarters Stations & Citadel Megastructures
+  if (
+    role === 'HQ' ||
+    id.includes('hq') ||
+    hqType === 'GARN_RING_CITADEL' ||
+    hqType === 'ALDONAH_FORGE_CITADEL' ||
+    hqType === 'LIAAL_AGRO_CITADEL' ||
+    hqType === 'KOVAK_SWARM_BASTION' ||
+    hqType === 'YESTIRI_CITY_SHIP' ||
+    ship.isGarnRing ||
+    (ship.isCityShip && (role === 'HQ' || id.includes('hq') || !role))
+  ) {
+    return true;
+  }
+
+  // 2. Expansion Citadels (EXC)
+  if (
+    role === 'EXPANSION_CITADEL' ||
+    role === 'EXC' ||
+    sType === 'EXPANSION_CITADEL' ||
+    sType === 'EXC' ||
+    sCode === 'EXC' ||
+    id.includes('expansion_citadel') ||
+    id.includes('exc')
+  ) {
+    return true;
+  }
+
+  // 3. Pirate Bastion Strongholds
+  if (
+    ship.isPirateBastion ||
+    role === 'BASTION' ||
+    sType === 'BASTION' ||
+    sCode === 'BST' ||
+    sCode === 'BAS' ||
+    id.includes('bastion')
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Evaluates whether an entity is an Orbital Structure (Shipyards, Research Stations, Defense Platforms, Sensor Posts).
+ */
+export function isOrbitalStructureEntity(ship: any): boolean {
+  if (!ship || isCitadelEntity(ship)) return false;
+  const role = (ship.role || '').toUpperCase();
+  const sType = ((ship.structureType || '') as string).toUpperCase();
+  const sCode = ((ship.code || '') as string).toUpperCase();
+  const id = ((ship.id || '') as string).toLowerCase();
+
+  return (
+    role === 'SY_LIGHT' || role === 'LIGHT_SHIPYARD' || sType === 'SY_LIGHT' || sType === 'LIGHT_SHIPYARD' || sCode === 'SY-L' || id.includes('sy_light') || id.includes('light_shipyard') || id.includes('light-shipyard') ||
+    role === 'SY_MEDIUM' || role === 'MEDIUM_SHIPYARD' || sType === 'SY_MEDIUM' || sType === 'MEDIUM_SHIPYARD' || sCode === 'SY-M' || id.includes('sy_medium') || id.includes('medium_shipyard') || id.includes('medium-shipyard') ||
+    role === 'SY_HEAVY' || role === 'CAPITAL_SHIPYARD' || sType === 'SY_HEAVY' || sType === 'CAPITAL_SHIPYARD' || sCode === 'SY-H' || id.includes('sy_heavy') || id.includes('capital_shipyard') || id.includes('capital-shipyard') || id.includes('heavy_shipyard') || id.includes('heavy-shipyard') ||
+    id.includes('shipyard') ||
+    role === 'MILITARY_RESEARCH' || sType === 'MILITARY_RESEARCH' || sCode === 'MRS' || id.includes('mrs') || id.includes('military_research') ||
+    role === 'CIVIC_RESEARCH' || sType === 'CIVIC_RESEARCH' || sCode === 'CRO' || id.includes('cro') || id.includes('civic_research') ||
+    role === 'MISSILE_BATTERY' || sType === 'MISSILE_BATTERY' || sCode === 'MSB' || sCode === 'BAT' || id.includes('missile_battery') ||
+    role === 'PD_PLATFORM' || sType === 'PD_PLATFORM' || sCode === 'PDP' || id.includes('pd_platform') ||
+    role === 'GARN_MISSILE_POD' || sType === 'GARN_MISSILE_POD' || sCode === 'SDMP' || id.includes('sdmp') || id.includes('garn_missile') || id.includes('garn-missile') ||
+    role === 'REPAIR_BAY' || sType === 'REPAIR_BAY' || sCode === 'RPB' || sCode === 'R-BAY' || id.includes('repair_bay') ||
+    role === 'ORBITAL_REFINERY' || sType === 'ORBITAL_REFINERY' || sCode === 'REF' || id.includes('refinery') ||
+    role.startsWith('POST_SENSOR') || sType.startsWith('POST_SENSOR') || sCode.startsWith('POST-') || id.includes('post_sensor') || id.includes('post-') ||
+    Boolean(ship.isStationary) ||
+    Boolean(ship.isStructure)
+  );
+}
+
+/**
+ * Returns visual scale multiplier (3:1 visual scale for movable ships and orbital structures, 1:1 for planetary citadels and celestial bodies).
+ */
+export function getShipVisualScaleMultiplier(ship: any): number {
+  if (!ship) return 1.0;
+  if (isCitadelEntity(ship)) return 1.0;
+  return 3.0; // Unified 3:1 tactical scale for all ships and orbital structures
+}
+
+/**
  * Procedural Vector Ship Renderers
  * 
  * Replaces wireframe triangles with distinct high-fidelity vector geometry:
@@ -127,15 +257,42 @@ export function renderProceduralShip(
     return;
   }
 
-  // Friendly & Orbital Structures
-  if (role === 'HQ' || id.includes('hq')) {
-    renderHQStation(ctx, r, timeMs);
-    return;
-  }
-
   const sType = ((ship as any).structureType || '').toUpperCase();
   const rUpper = (role as string || '').toUpperCase();
   const sCode = ((ship as any).code || '').toUpperCase();
+
+  // Garn System Defense Missile Pod (SDMP)
+  if (
+    rUpper === 'GARN_MISSILE_POD' ||
+    sType === 'GARN_MISSILE_POD' ||
+    sCode === 'SDMP' ||
+    id.includes('sdmp') ||
+    id.includes('garn_missile') ||
+    id.includes('garn-missile')
+  ) {
+    renderGarnSystemMissilePod(ctx, r, timeMs);
+    return;
+  }
+
+  // Friendly & Orbital Structures
+  if (role === 'HQ' || id.includes('hq')) {
+    const hqType = ship.hqType;
+    if (hqType === 'GARN_RING_CITADEL' || ship.isGarnRing || ship.factionId === 'GARN' || (ship.faction as any) === 'GARN') {
+      renderGarnHQStructure(ctx, r, timeMs);
+    } else if (hqType === 'ALDONAH_FORGE_CITADEL' || ship.factionId === 'ALDONAH' || (ship.faction as any) === 'ALDONAH') {
+      renderAldonahForgeCitadel(ctx, Math.max(r, 140), timeMs);
+    } else if (hqType === 'LIAAL_AGRO_CITADEL' || ship.factionId === 'LIAAL' || (ship.faction as any) === 'LIAAL') {
+      renderLiaalAgroCitadel(ctx, r, timeMs);
+    } else if (hqType === 'KOVAK_SWARM_BASTION' || ship.factionId === 'KOVAK' || (ship.faction as any) === 'KOVAK') {
+      renderKovakSwarmBastion(ctx, r, timeMs);
+    } else if (hqType === 'YESTIRI_CITY_SHIP' || ship.isCityShip || ship.factionId === 'YESTIRI' || (ship.faction as any) === 'YESTIRI') {
+      // Yestiri HQ is a mobile City Ship citadel!
+      drawYestiriShip(ctx, ship, Math.max(r, 75), timeMs, isHostile, true);
+    } else {
+      renderHQStation(ctx, r, timeMs);
+    }
+    return;
+  }
 
   // Procedural Research Labs & Citadels (MRS, CRO, EXC)
   if (
@@ -281,6 +438,64 @@ export function renderProceduralShip(
     return;
   }
 
+  // Garn Hegemony Annular Warships
+  if (
+    ship.factionId === 'GARN' ||
+    (ship.faction as any) === 'GARN' ||
+    (ship as any).isGarnAnnular ||
+    (ship as any).isGarnLongRange ||
+    id.includes('garn')
+  ) {
+    drawGarnAnnularShip(ctx, ship, r, timeMs, isHostile);
+    return;
+  }
+
+  // Yestiri Sodality Ring Ships (Carbon copies at different scales, up to the massive City Ship)
+  if (
+    ship.factionId === 'YESTIRI' ||
+    (ship.faction as any) === 'YESTIRI' ||
+    (role as string) === 'CITY_SHIP' ||
+    (role as string) === 'CS' ||
+    (ship as any).isYestiriRing ||
+    id.includes('city-ship') ||
+    id.includes('city_ship') ||
+    (id.includes('yestiri') && !id.includes('station'))
+  ) {
+    const isCityShip = (role as string) === 'CITY_SHIP' || (role as string) === 'CS' || id.includes('city');
+    drawYestiriShip(ctx, ship, isCityShip ? Math.max(r, 70) : r, timeMs, isHostile, isCityShip);
+    return;
+  }
+
+  // Liaal Specialized Warships: 3 Warships only (Light 20-salvo, Medium 45-salvo, Heavy 100-salvo)
+  if (
+    ship.factionId === 'LIAAL' ||
+    (ship.faction as any) === 'LIAAL' ||
+    role === 'LIAAL_LIGHT' ||
+    role === 'LIAAL_MEDIUM' ||
+    role === 'LIAAL_HEAVY' ||
+    id.includes('l-ws') ||
+    id.includes('m-ws') ||
+    id.includes('h-ws') ||
+    id.includes('liaal')
+  ) {
+    const isHeavy = role === 'LIAAL_HEAVY' || id.includes('h-ws') || id.includes('heavy');
+    const isMedium = role === 'LIAAL_MEDIUM' || id.includes('m-ws') || id.includes('medium');
+    const tier = isHeavy ? 'HEAVY' : isMedium ? 'MEDIUM' : 'LIGHT';
+    drawLiaalShip(ctx, ship, r, timeMs, isHostile, tier);
+    return;
+  }
+
+  // Kovak Enclave Warships: Angular Rhomboid Hull Architecture (Volume over quality)
+  if (
+    ship.factionId === 'KOVAK' ||
+    (ship.faction as any) === 'KOVAK' ||
+    id.includes('kovak') ||
+    (ship as any).isKovakRhomboid
+  ) {
+    drawKovakShip(ctx, ship, r, timeMs, isHostile);
+    return;
+  }
+
   // Procedural Hard-Surface Combatant Silhouettes (Both Friendly & Hostile)
   if (role === 'FRIGATE' || id.includes('fg') || id.includes('frigate')) {
     drawFrigate(ctx, ship, r, timeMs, isHostile);
@@ -314,7 +529,7 @@ export function renderProceduralShip(
     drawCarrier(ctx, ship, r, timeMs, isHostile);
     return;
   }
-  if (role === 'CRUISER' || id.includes('cruiser') || id.includes('vanguard')) {
+  if ((role as string) === 'CRUISER' || id.includes('cruiser') || id.includes('vanguard')) {
     drawLightCruiser(ctx, ship, r, timeMs, isHostile);
     return;
   }
@@ -406,8 +621,7 @@ export function drawFrigate(
   const baseArmor = isHostile ? '#272329' : UNSC_PALETTE.primaryArmorBase;
   const plateHighlight = isHostile ? '#3a2b32' : UNSC_PALETTE.primaryArmorHighlight;
   const trenchColor = UNSC_PALETTE.secondaryArmor;
-  const chamferColor = isHostile ? '#6b434a' : UNSC_PALETTE.armorChamfer;
-  const factionColor = isCrippled ? '#ff2222' : isHostile ? '#f43f5e' : '#00f0ff';
+  const { primaryColor: factionColor, chamferColor } = getShipFactionColors(ship, isHostile, isCrippled);
   const engineGlow = isHostile ? '#ff7700' : UNSC_PALETTE.ionExhaustGlow;
   const isBurn = ship.fmsActive || ship.splineActive || Math.hypot(ship.velocity?.x || 0, ship.velocity?.y || 0) > 0.05;
 
@@ -531,8 +745,7 @@ export function drawDestroyer(
   const baseArmor = isHostile ? '#272329' : UNSC_PALETTE.primaryArmorBase;
   const plateHighlight = isHostile ? '#3a2b32' : UNSC_PALETTE.primaryArmorHighlight;
   const trenchColor = UNSC_PALETTE.secondaryArmor;
-  const chamferColor = isHostile ? '#6b434a' : UNSC_PALETTE.armorChamfer;
-  const factionColor = isCrippled ? '#ff2222' : isHostile ? '#f43f5e' : '#00f0ff';
+  const { primaryColor: factionColor, chamferColor } = getShipFactionColors(ship, isHostile, isCrippled);
   const engineGlow = isHostile ? '#ff7700' : UNSC_PALETTE.ionExhaustGlow;
   const isBurn = ship.fmsActive || ship.splineActive || Math.hypot(ship.velocity?.x || 0, ship.velocity?.y || 0) > 0.05;
 
@@ -656,8 +869,7 @@ export function drawLightCruiser(
   const baseArmor = isHostile ? '#272329' : UNSC_PALETTE.primaryArmorBase;
   const plateHighlight = isHostile ? '#3a2b32' : UNSC_PALETTE.primaryArmorHighlight;
   const trenchColor = UNSC_PALETTE.secondaryArmor;
-  const chamferColor = isHostile ? '#6b434a' : UNSC_PALETTE.armorChamfer;
-  const factionColor = isCrippled ? '#ff2222' : isHostile ? '#f43f5e' : '#00f0ff';
+  const { primaryColor: factionColor, chamferColor } = getShipFactionColors(ship, isHostile, isCrippled);
   const engineGlow = isHostile ? '#ff7700' : UNSC_PALETTE.ionExhaustGlow;
   const isBurn = ship.fmsActive || ship.splineActive || Math.hypot(ship.velocity?.x || 0, ship.velocity?.y || 0) > 0.05;
 
@@ -784,8 +996,7 @@ export function drawHeavyCruiser(
   const baseArmor = isHostile ? '#272329' : UNSC_PALETTE.primaryArmorBase;
   const plateHighlight = isHostile ? '#3a2b32' : UNSC_PALETTE.primaryArmorHighlight;
   const trenchColor = UNSC_PALETTE.secondaryArmor;
-  const chamferColor = isHostile ? '#6b434a' : UNSC_PALETTE.armorChamfer;
-  const factionColor = isCrippled ? '#ff2222' : isHostile ? '#f43f5e' : '#00f0ff';
+  const { primaryColor: factionColor, chamferColor } = getShipFactionColors(ship, isHostile, isCrippled);
   const engineGlow = isHostile ? '#ff7700' : UNSC_PALETTE.ionExhaustGlow;
   const isBurn = ship.fmsActive || ship.splineActive || Math.hypot(ship.velocity?.x || 0, ship.velocity?.y || 0) > 0.05;
 
@@ -927,8 +1138,7 @@ export function drawBattlecruiser(
   const baseArmor = isHostile ? '#272329' : UNSC_PALETTE.primaryArmorBase;
   const plateHighlight = isHostile ? '#3a2b32' : UNSC_PALETTE.primaryArmorHighlight;
   const trenchColor = UNSC_PALETTE.secondaryArmor;
-  const chamferColor = isHostile ? '#6b434a' : UNSC_PALETTE.armorChamfer;
-  const factionColor = isCrippled ? '#ff2222' : isHostile ? '#f43f5e' : '#00f0ff';
+  const { primaryColor: factionColor, chamferColor } = getShipFactionColors(ship, isHostile, isCrippled);
   const engineGlow = isHostile ? '#ff7700' : UNSC_PALETTE.ionExhaustGlow;
   const isBurn = ship.fmsActive || ship.splineActive || Math.hypot(ship.velocity?.x || 0, ship.velocity?.y || 0) > 0.05;
 
@@ -1048,8 +1258,7 @@ export function drawBattleship(
   const baseArmor = isHostile ? '#272329' : UNSC_PALETTE.primaryArmorBase;
   const plateHighlight = isHostile ? '#3a2b32' : UNSC_PALETTE.primaryArmorHighlight;
   const trenchColor = UNSC_PALETTE.secondaryArmor;
-  const chamferColor = isHostile ? '#6b434a' : UNSC_PALETTE.armorChamfer;
-  const factionColor = isCrippled ? '#ff2222' : isHostile ? '#f43f5e' : '#00f0ff';
+  const { primaryColor: factionColor, chamferColor } = getShipFactionColors(ship, isHostile, isCrippled);
   const engineGlow = isHostile ? '#ff7700' : UNSC_PALETTE.ionExhaustGlow;
   const isBurn = ship.fmsActive || ship.splineActive || Math.hypot(ship.velocity?.x || 0, ship.velocity?.y || 0) > 0.05;
 
@@ -1193,8 +1402,7 @@ export function drawDreadnought(
   const baseArmor = isHostile ? '#272329' : UNSC_PALETTE.primaryArmorBase;
   const plateHighlight = isHostile ? '#3a2b32' : UNSC_PALETTE.primaryArmorHighlight;
   const trenchColor = UNSC_PALETTE.secondaryArmor;
-  const chamferColor = isHostile ? '#6b434a' : UNSC_PALETTE.armorChamfer;
-  const factionColor = isCrippled ? '#ff2222' : isHostile ? '#f43f5e' : '#00f0ff';
+  const { primaryColor: factionColor, chamferColor } = getShipFactionColors(ship, isHostile, isCrippled);
   const engineGlow = isHostile ? '#ff7700' : UNSC_PALETTE.ionExhaustGlow;
   const isBurn = ship.fmsActive || ship.splineActive || Math.hypot(ship.velocity?.x || 0, ship.velocity?.y || 0) > 0.05;
 
@@ -1358,8 +1566,7 @@ export function drawCarrier(
   const plateHighlight = isHostile ? '#3a2b32' : UNSC_PALETTE.primaryArmorHighlight;
   const deckSurface = isHostile ? '#1c1f24' : '#222831';
   const trenchColor = UNSC_PALETTE.secondaryArmor;
-  const chamferColor = isHostile ? '#6b434a' : UNSC_PALETTE.armorChamfer;
-  const factionColor = isCrippled ? '#ff2222' : isHostile ? '#f43f5e' : '#00f0ff';
+  const { primaryColor: factionColor, chamferColor } = getShipFactionColors(ship, isHostile, isCrippled);
   const engineGlow = isHostile ? '#ff7700' : UNSC_PALETTE.ionExhaustGlow;
   const isBurn = ship.fmsActive || ship.splineActive || Math.hypot(ship.velocity?.x || 0, ship.velocity?.y || 0) > 0.05;
 
@@ -1654,7 +1861,7 @@ function renderVanguard(ctx: CanvasRenderingContext2D, ship: ShipEntity, r: numb
   ctx.save();
 
   const isCrippled = ship.hullState === 'CRIPPLED';
-  const trimColor = isCrippled ? '#f43f5e' : '#38bdf8';
+  const { primaryColor: trimColor } = getShipFactionColors(ship, false, isCrippled);
 
   // 1. Angular Chisel Hull Silhouette (Polygonal lineTo)
   ctx.beginPath();
@@ -1735,7 +1942,7 @@ function renderEnemyShip(ctx: CanvasRenderingContext2D, ship: ShipEntity, r: num
   ctx.save();
 
   const isCrippled = ship.hullState === 'CRIPPLED';
-  const strokeColor = isCrippled ? '#ff2222' : '#f43f5e';
+  const { primaryColor: strokeColor } = getShipFactionColors(ship, true, isCrippled);
   const role = ship.role;
 
   // 1. Tailored Asymmetric Blocky Silhouettes
@@ -3197,3 +3404,1529 @@ export function renderOrbitalRefinery(ctx: CanvasRenderingContext2D, r: number, 
 
   ctx.restore();
 }
+
+/**
+ * GARN HEGEMONY ANNULAR WARSHIP RENDERER
+ * 
+ * Annular torus configuration:
+ * - Outer and inner concentric rings (torus profile) with faceted emerald/bronze hull plating seams
+ * - 4 structural radiating spokes connecting outer ring to central command core
+ * - Central command hub with glowing tactical green telemetry dome
+ * - Perimeter weapon nacelles, laser blisters, and missile launch bays arrayed radially
+ * - Recessed stern thruster blocks on the rear arc with emerald/cyan drive flares
+ * - Green tactical running lights (#22c55e, #4ade80, #166534)
+ */
+/**
+ * ============================================================================
+ * GARN HEGEMONY ANNULAR WARSHIPS
+ * ============================================================================
+ * Authentic top-down vector realization of the canonical Garn annular warship:
+ * - Elongated, slender, faceted armored fuselage along the heading axis
+ * - Prominent circular annular warp/habitat drive ring encircling the midsection
+ * - Symmetrical structural bridge pylons and magnetic conduit struts connecting ring to hull
+ * - Forward hull: Layered faceted armor deck, tapered prow with twin forward projector
+ *   nacelles (Frigate/Destroyer) or faceted wedge prow with VLS missile blisters (Cruiser/Capital)
+ * - Aft hull: Stepped horizontal cooling radiator grids / heat sinks along dorsal spine
+ * - Stern: Heavy armored engine block with dual/quad plasma thrusters and emerald ion plumes
+ * - Garn emerald-and-bronze armor palette (#064e3b, #042f24, #14532d, #b45309, #f59e0b, #4ade80)
+ */
+export function drawGarnAnnularShip(
+  ctx: CanvasRenderingContext2D,
+  ship: ShipEntity,
+  r: number,
+  timeMs: number,
+  isHostile: boolean
+): void {
+  ctx.save();
+
+  const isCrippled = ship.hullState === 'CRIPPLED';
+  const role = ((ship.role as string) || '').toUpperCase();
+  const id = (ship.id || '').toLowerCase();
+  const isFrigateOrDestroyer =
+    role === 'FRIGATE' ||
+    role === 'DESTROYER' ||
+    role === 'CORVETTE' ||
+    role === 'SCOUT' ||
+    id.includes('frigate') ||
+    id.includes('destroyer') ||
+    id.includes('escort') ||
+    r <= 20;
+
+  const isCapital =
+    role === 'BATTLECRUISER' ||
+    role === 'BATTLESHIP' ||
+    role === 'DREADNOUGHT' ||
+    id.includes('battle') ||
+    id.includes('dread') ||
+    r >= 36;
+
+  const scale = Math.max(0.4, r / 16.0);
+
+  // Garn emerald & bronze military palette
+  const armorBase = isHostile ? '#161d19' : '#042f24';
+  const armorMid = isHostile ? '#222d26' : '#064e3b';
+  const armorLight = isHostile ? '#2f3e35' : '#0f5132';
+  const armorFacet = isHostile ? '#3e5246' : '#14532d';
+  const armorHighlight = isHostile ? '#526d5c' : '#15803d';
+  const bronzeTrim = isHostile ? '#78350f' : '#b45309';
+  const bronzeBright = isHostile ? '#b45309' : '#f59e0b';
+  const emeraldGlow = '#10b981';
+  const emeraldLight = '#4ade80';
+  const deepGreen = '#059669';
+
+  // Geometry dimensions
+  const len = r * 2.45;
+  const bowX = len * 0.52;
+  const sternX = -len * 0.48;
+  const ringX = -len * 0.05; // Placed at mid-to-aft section
+  const hw = r * 0.36; // Hull half-width
+
+  // Annular drive ring dimensions
+  const ringOuterR = Math.max(3.0, r * 0.92);
+  const ringInnerR = Math.max(1.5, ringOuterR * 0.65);
+  const ringWidth = ringOuterR - ringInnerR;
+  const ringLongitudinalBreadth = Math.max(2.5, r * 0.30);
+
+  const isBurning = (ship.maxSpeed || 0) > 0 && ((ship.velocity && (ship.velocity.x !== 0 || ship.velocity.y !== 0)) || ship.splineActive);
+
+  // -------------------------------------------------------------------------
+  // 1. ENGINE EXHAUST PLUMES (Aft of Stern)
+  // -------------------------------------------------------------------------
+  if (isFrigateOrDestroyer) {
+    // Twin main thruster exhausts
+    const plumePositions = [-hw * 0.45, hw * 0.45];
+    for (const py of plumePositions) {
+      ctx.save();
+      renderThrusterPlume(
+        ctx,
+        sternX - 2.5 * scale,
+        py,
+        3.5 * scale,
+        (isBurning ? 20 : 10) * scale,
+        isBurning || false,
+        '#10b981',
+        timeMs
+      );
+      ctx.restore();
+    }
+  } else {
+    // Quad heavy capital thruster exhausts
+    const plumePositions = [-hw * 0.65, -hw * 0.22, hw * 0.22, hw * 0.65];
+    for (const py of plumePositions) {
+      ctx.save();
+      renderThrusterPlume(
+        ctx,
+        sternX - 2.5 * scale,
+        py,
+        3.0 * scale,
+        (isBurning ? 22 : 12) * scale,
+        isBurning || false,
+        '#10b981',
+        timeMs
+      );
+      ctx.restore();
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 2. AFT SPINE RADIATOR HEAT SINK GRIDS (Stepped Horizontal Ribbed Grille)
+  // -------------------------------------------------------------------------
+  const radiatorStartX = ringX - ringLongitudinalBreadth * 0.55;
+  const radiatorEndX = -len * 0.36;
+  const radiatorWidth = hw * 0.52;
+  const radiatorSteps = isCapital ? 7 : 5;
+
+  // Recessed radiator trough
+  ctx.fillStyle = '#021811';
+  ctx.fillRect(radiatorEndX, -radiatorWidth * 0.5, radiatorStartX - radiatorEndX, radiatorWidth);
+  ctx.strokeStyle = bronzeTrim;
+  ctx.lineWidth = 0.9 * scale;
+  ctx.strokeRect(radiatorEndX, -radiatorWidth * 0.5, radiatorStartX - radiatorEndX, radiatorWidth);
+
+  // Ribbed heat dissipator slats
+  const stepDist = (radiatorStartX - radiatorEndX) / radiatorSteps;
+  for (let s = 1; s < radiatorSteps; s++) {
+    const rx = radiatorEndX + s * stepDist;
+    ctx.strokeStyle = 'rgba(74, 222, 128, 0.65)';
+    ctx.lineWidth = 1.0 * scale;
+    ctx.beginPath();
+    ctx.moveTo(rx, -radiatorWidth * 0.45);
+    ctx.lineTo(rx, radiatorWidth * 0.45);
+    ctx.stroke();
+
+    // Bronze connector clips
+    ctx.fillStyle = bronzeBright;
+    ctx.fillRect(rx - 0.6 * scale, -radiatorWidth * 0.48, 1.2 * scale, 1.6 * scale);
+    ctx.fillRect(rx - 0.6 * scale, radiatorWidth * 0.48 - 1.6 * scale, 1.2 * scale, 1.6 * scale);
+  }
+
+  // -------------------------------------------------------------------------
+  // 3. MAIN FUSELAGE HULL (Lower / Base Armored Body)
+  // -------------------------------------------------------------------------
+  ctx.beginPath();
+  // Stern
+  ctx.moveTo(sternX, -hw * 0.72);
+  ctx.lineTo(sternX, hw * 0.72);
+  // Engine bay flare
+  ctx.lineTo(-len * 0.36, hw * 0.88);
+  // Ring waist clearance
+  ctx.lineTo(ringX - ringLongitudinalBreadth * 0.6, hw * 0.95);
+  ctx.lineTo(ringX + ringLongitudinalBreadth * 0.6, hw * 0.95);
+  // Forward midsection
+  ctx.lineTo(len * 0.18, hw * 0.82);
+  // Forward prow taper
+  ctx.lineTo(len * 0.38, hw * 0.55);
+  if (isFrigateOrDestroyer) {
+    // Twin forward projector prow chamfers
+    ctx.lineTo(len * 0.48, hw * 0.38);
+    ctx.lineTo(bowX, hw * 0.38);
+    ctx.lineTo(bowX, hw * 0.08);
+    ctx.lineTo(len * 0.48, 0);
+    ctx.lineTo(bowX, -hw * 0.08);
+    ctx.lineTo(bowX, -hw * 0.38);
+    ctx.lineTo(len * 0.48, -hw * 0.38);
+  } else {
+    // Capital wedge prow
+    ctx.lineTo(len * 0.48, hw * 0.32);
+    ctx.lineTo(bowX, hw * 0.12);
+    ctx.lineTo(bowX, -hw * 0.12);
+    ctx.lineTo(len * 0.48, -hw * 0.32);
+  }
+  ctx.lineTo(len * 0.38, -hw * 0.55);
+  ctx.lineTo(len * 0.18, -hw * 0.82);
+  ctx.lineTo(ringX + ringLongitudinalBreadth * 0.6, -hw * 0.95);
+  ctx.lineTo(ringX - ringLongitudinalBreadth * 0.6, -hw * 0.95);
+  ctx.lineTo(-len * 0.36, -hw * 0.88);
+  ctx.closePath();
+
+  // Hull base gradient
+  const hullGrad = ctx.createLinearGradient(sternX, 0, bowX, 0);
+  hullGrad.addColorStop(0, armorBase);
+  hullGrad.addColorStop(0.35, armorMid);
+  hullGrad.addColorStop(0.7, armorFacet);
+  hullGrad.addColorStop(1, armorHighlight);
+  ctx.fillStyle = hullGrad;
+  ctx.fill();
+
+  ctx.strokeStyle = bronzeTrim;
+  ctx.lineWidth = 1.4 * scale;
+  ctx.stroke();
+
+  // -------------------------------------------------------------------------
+  // 4. UPPER DECK ARMOR PLATING & FACETED CHINES
+  // -------------------------------------------------------------------------
+  // Lateral armored flank bevels (Port & Starboard)
+  ctx.fillStyle = armorMid;
+  ctx.strokeStyle = 'rgba(74, 222, 128, 0.4)';
+  ctx.lineWidth = 0.8 * scale;
+
+  // Starboard Upper Plate
+  ctx.beginPath();
+  ctx.moveTo(ringX + ringLongitudinalBreadth * 0.6, hw * 0.75);
+  ctx.lineTo(len * 0.22, hw * 0.65);
+  ctx.lineTo(len * 0.42, hw * 0.38);
+  ctx.lineTo(len * 0.42, hw * 0.18);
+  ctx.lineTo(len * 0.18, hw * 0.25);
+  ctx.lineTo(ringX + ringLongitudinalBreadth * 0.6, hw * 0.30);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Port Upper Plate
+  ctx.beginPath();
+  ctx.moveTo(ringX + ringLongitudinalBreadth * 0.6, -hw * 0.75);
+  ctx.lineTo(len * 0.22, -hw * 0.65);
+  ctx.lineTo(len * 0.42, -hw * 0.38);
+  ctx.lineTo(len * 0.42, -hw * 0.18);
+  ctx.lineTo(len * 0.18, -hw * 0.25);
+  ctx.lineTo(ringX + ringLongitudinalBreadth * 0.6, -hw * 0.30);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Center Raised Dorsal Armor Spine (matching the raised faceted spine in the 3D model)
+  ctx.beginPath();
+  ctx.moveTo(ringX + ringLongitudinalBreadth * 0.5, -hw * 0.32);
+  ctx.lineTo(len * 0.28, -hw * 0.28);
+  ctx.lineTo(len * 0.45, -hw * 0.15);
+  ctx.lineTo(len * 0.48, 0);
+  ctx.lineTo(len * 0.45, hw * 0.15);
+  ctx.lineTo(len * 0.28, hw * 0.28);
+  ctx.lineTo(ringX + ringLongitudinalBreadth * 0.5, hw * 0.32);
+  ctx.closePath();
+
+  const spineGrad = ctx.createLinearGradient(ringX, 0, len * 0.48, 0);
+  spineGrad.addColorStop(0, armorLight);
+  spineGrad.addColorStop(0.6, armorFacet);
+  spineGrad.addColorStop(1, armorHighlight);
+  ctx.fillStyle = spineGrad;
+  ctx.fill();
+
+  ctx.strokeStyle = bronzeBright;
+  ctx.lineWidth = 1.1 * scale;
+  ctx.stroke();
+
+  // Longitudinal Spine Crease
+  ctx.strokeStyle = 'rgba(74, 222, 128, 0.75)';
+  ctx.lineWidth = 0.9 * scale;
+  ctx.beginPath();
+  ctx.moveTo(ringX + ringLongitudinalBreadth * 0.5, 0);
+  ctx.lineTo(len * 0.48, 0);
+  ctx.stroke();
+
+  // -------------------------------------------------------------------------
+  // 5. CLASS-SPECIFIC FORWARD WEAPONS & SENSORS
+  // -------------------------------------------------------------------------
+  if (isFrigateOrDestroyer) {
+    // Twin Forward Projector Barrels / Nacelles at Prow Tip (as in lower wireframe)
+    const barrelYPositions = [-hw * 0.23, hw * 0.23];
+    for (const by of barrelYPositions) {
+      // Cylindrical projector housing
+      ctx.fillStyle = '#0f172a';
+      ctx.strokeStyle = bronzeBright;
+      ctx.lineWidth = 1.0 * scale;
+      ctx.beginPath();
+      ctx.arc(bowX - 1.5 * scale, by, 3.2 * scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Glowing emitter aperture
+      ctx.fillStyle = emeraldLight;
+      ctx.beginPath();
+      ctx.arc(bowX - 1.5 * scale, by, 1.5 * scale, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // Lateral Mid-Forward Cylindrical Sensor Pods (matching lower wireframe flanks)
+    const podYPositions = [-hw * 0.88, hw * 0.88];
+    for (const py of podYPositions) {
+      ctx.fillStyle = '#064e3b';
+      ctx.strokeStyle = bronzeTrim;
+      ctx.lineWidth = 0.9 * scale;
+      ctx.beginPath();
+      ctx.arc(len * 0.08, py, 2.6 * scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(len * 0.18, py, 2.6 * scale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+  } else {
+    // Heavy Capital Forward Graser Emitter & VLS Blister Cells
+    ctx.fillStyle = '#021811';
+    ctx.strokeStyle = bronzeBright;
+    ctx.lineWidth = 1.2 * scale;
+    ctx.beginPath();
+    ctx.arc(bowX - 2 * scale, 0, 3.6 * scale, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = emeraldLight;
+    ctx.beginPath();
+    ctx.arc(bowX - 2 * scale, 0, 1.8 * scale, 0, Math.PI * 2);
+    ctx.fill();
+
+    // VLS Missile Cell Blisters along mid-deck
+    const vlsCols = 3;
+    for (let c = 0; c < vlsCols; c++) {
+      const vx = len * 0.12 + c * 4.5 * scale;
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(vx, -hw * 0.5, 3.0 * scale, 2.0 * scale);
+      ctx.fillRect(vx, hw * 0.5 - 2.0 * scale, 3.0 * scale, 2.0 * scale);
+      ctx.strokeStyle = bronzeTrim;
+      ctx.lineWidth = 0.7 * scale;
+      ctx.strokeRect(vx, -hw * 0.5, 3.0 * scale, 2.0 * scale);
+      ctx.strokeRect(vx, hw * 0.5 - 2.0 * scale, 3.0 * scale, 2.0 * scale);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 6. ANNULAR WARP / HABITAT DRIVE RING (The Canonical Garn Ring Collar)
+  // -------------------------------------------------------------------------
+  // Symmetrical Bridge Pylons (connecting central fuselage to inner ring)
+  const pylonAngles = [Math.PI * 0.25, Math.PI * 0.75, -Math.PI * 0.25, -Math.PI * 0.75];
+  for (const pAng of pylonAngles) {
+    const px = ringX + Math.cos(pAng) * (ringInnerR * 0.45);
+    const py = Math.sin(pAng) * ringInnerR;
+
+    ctx.save();
+    ctx.strokeStyle = bronzeTrim;
+    ctx.fillStyle = armorFacet;
+    ctx.lineWidth = 1.2 * scale;
+
+    ctx.beginPath();
+    ctx.moveTo(ringX, Math.sign(py) * hw * 0.85);
+    ctx.lineTo(px, py);
+    ctx.stroke();
+
+    // Glowing conduit line inside pylon
+    ctx.strokeStyle = emeraldGlow;
+    ctx.lineWidth = 0.8 * scale;
+    ctx.beginPath();
+    ctx.moveTo(ringX, Math.sign(py) * hw * 0.85);
+    ctx.lineTo(px, py);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  // Horizontal Structural Pylon Spans
+  const horizPylons = [-1, 1];
+  for (const side of horizPylons) {
+    ctx.fillStyle = armorLight;
+    ctx.strokeStyle = bronzeBright;
+    ctx.lineWidth = 1.0 * scale;
+    const pW = ringLongitudinalBreadth * 0.65;
+    const pH = Math.max(0.5, ringInnerR - hw * 0.85);
+    const pY = side > 0 ? hw * 0.85 : -(hw * 0.85 + pH);
+
+    ctx.fillRect(ringX - pW * 0.5, pY, pW, pH);
+    ctx.strokeRect(ringX - pW * 0.5, pY, pW, pH);
+
+    // Glowing conduits in pylon
+    ctx.strokeStyle = emeraldLight;
+    ctx.lineWidth = 0.9 * scale;
+    ctx.beginPath();
+    ctx.moveTo(ringX, side > 0 ? hw * 0.85 : -hw * 0.85);
+    ctx.lineTo(ringX, side * ringInnerR);
+    ctx.stroke();
+  }
+
+  // Annular Torus Ring (Top-Down Elliptical Projection of the Vertical Circular Ring)
+  // Outer Ring Torus
+  ctx.save();
+  ctx.translate(ringX, 0);
+
+  const rxOuter = Math.max(0.5, ringLongitudinalBreadth * 0.85);
+  const ryOuter = Math.max(0.5, ringOuterR);
+  const rxInner = Math.max(0.2, ringLongitudinalBreadth * 0.45);
+  const ryInner = Math.max(0.2, ringInnerR);
+  const rxMid = Math.max(0.3, ringLongitudinalBreadth * 0.65);
+  const ryMid = Math.max(0.3, (ringInnerR + ringOuterR) * 0.5);
+
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rxOuter, ryOuter, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, 0, rxInner, ryInner, 0, 0, Math.PI * 2, true);
+  ctx.closePath();
+
+  // Torus Gradient Shading
+  const ringTorusGrad = ctx.createRadialGradient(0, 0, ryInner, 0, 0, ryOuter);
+  ringTorusGrad.addColorStop(0, armorLight);
+  ringTorusGrad.addColorStop(0.4, armorMid);
+  ringTorusGrad.addColorStop(0.8, armorBase);
+  ringTorusGrad.addColorStop(1, armorHighlight);
+  ctx.fillStyle = ringTorusGrad;
+  ctx.fill();
+
+  ctx.strokeStyle = bronzeBright;
+  ctx.lineWidth = 1.6 * scale;
+  ctx.stroke();
+
+  // Concentric Inner Energy Conduit Track
+  const pulseOffset = Math.sin(timeMs * 0.003);
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rxMid, ryMid, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = `rgba(74, 222, 128, ${0.7 + pulseOffset * 0.25})`;
+  ctx.lineWidth = 1.2 * scale;
+  ctx.setLineDash([4 * scale, 3 * scale]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Outer Perimeter Armor Ring Rim
+  ctx.beginPath();
+  ctx.ellipse(0, 0, rxOuter, ryOuter, 0, 0, Math.PI * 2);
+  ctx.strokeStyle = bronzeTrim;
+  ctx.lineWidth = 1.2 * scale;
+  ctx.stroke();
+
+  // Segmented Field Emitter Blocks on Outer Ring Lobes
+  const emitterNodeAngles = [
+    Math.PI * 0.35, Math.PI * 0.5, Math.PI * 0.65,
+    -Math.PI * 0.35, -Math.PI * 0.5, -Math.PI * 0.65
+  ];
+  for (const nAng of emitterNodeAngles) {
+    const ex = Math.cos(nAng) * (ringLongitudinalBreadth * 0.85);
+    const ey = Math.sin(nAng) * ringOuterR;
+
+    ctx.save();
+    ctx.translate(ex, ey);
+    ctx.rotate(nAng);
+
+    ctx.fillStyle = '#0f172a';
+    ctx.strokeStyle = bronzeBright;
+    ctx.lineWidth = 0.9 * scale;
+    ctx.fillRect(-1.5 * scale, -2.5 * scale, 3.0 * scale, 5.0 * scale);
+    ctx.strokeRect(-1.5 * scale, -2.5 * scale, 3.0 * scale, 5.0 * scale);
+
+    // Glowing diode
+    ctx.fillStyle = emeraldLight;
+    ctx.beginPath();
+    ctx.arc(0, 0, 1.2 * scale, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // Dorsal Arch Overlap & Shadow (Creating 3D perspective over fuselage)
+  ctx.fillStyle = 'rgba(2, 44, 34, 0.4)';
+  ctx.fillRect(-ringLongitudinalBreadth * 0.7, -hw * 0.85, ringLongitudinalBreadth * 1.4, hw * 1.7);
+
+  ctx.restore(); // Exit ring translation
+
+  // -------------------------------------------------------------------------
+  // 7. TACTICAL RUNNING LIGHTS & STATUS INDICATORS
+  // -------------------------------------------------------------------------
+  const blink = (Math.sin(timeMs * 0.006) + 1) * 0.5 > 0.4;
+  ctx.fillStyle = blink ? emeraldLight : deepGreen;
+
+  // Forward Bow Navigation Lights
+  ctx.beginPath();
+  ctx.arc(bowX - 3 * scale, -hw * 0.3, 1.1 * scale, 0, Math.PI * 2);
+  ctx.arc(bowX - 3 * scale, hw * 0.3, 1.1 * scale, 0, Math.PI * 2);
+  // Flank Navigation Lights
+  ctx.arc(ringX, -ringOuterR + 2 * scale, 1.1 * scale, 0, Math.PI * 2);
+  ctx.arc(ringX, ringOuterR - 2 * scale, 1.1 * scale, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Stern Thruster Rim Details
+  ctx.fillStyle = bronzeTrim;
+  ctx.strokeStyle = bronzeBright;
+  ctx.lineWidth = 1.0 * scale;
+  if (isFrigateOrDestroyer) {
+    ctx.fillRect(sternX - 1.5 * scale, -hw * 0.65, 2.0 * scale, hw * 0.4);
+    ctx.fillRect(sternX - 1.5 * scale, hw * 0.25, 2.0 * scale, hw * 0.4);
+    ctx.strokeRect(sternX - 1.5 * scale, -hw * 0.65, 2.0 * scale, hw * 0.4);
+    ctx.strokeRect(sternX - 1.5 * scale, hw * 0.25, 2.0 * scale, hw * 0.4);
+  } else {
+    ctx.fillRect(sternX - 1.5 * scale, -hw * 0.82, 2.0 * scale, hw * 0.35);
+    ctx.fillRect(sternX - 1.5 * scale, -hw * 0.38, 2.0 * scale, hw * 0.35);
+    ctx.fillRect(sternX - 1.5 * scale, hw * 0.03, 2.0 * scale, hw * 0.35);
+    ctx.fillRect(sternX - 1.5 * scale, hw * 0.47, 2.0 * scale, hw * 0.35);
+  }
+
+  // -------------------------------------------------------------------------
+  // 8. DAMAGE & CRIPPLED STATE PARTICLES
+  // -------------------------------------------------------------------------
+  if (isCrippled) {
+    const smokeFlicker = Math.sin(timeMs * 0.03) * 0.5 + 0.5;
+    ctx.fillStyle = `rgba(239, 68, 68, ${0.4 + smokeFlicker * 0.4})`;
+    ctx.beginPath();
+    ctx.arc(ringX, ringOuterR * 0.4, 3.5 * scale, 0, Math.PI * 2);
+    ctx.arc(len * 0.2, -hw * 0.3, 2.8 * scale, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Electrical discharge arcs
+    ctx.strokeStyle = '#4ade80';
+    ctx.lineWidth = 1.2 * scale;
+    ctx.beginPath();
+    ctx.moveTo(ringX - 4 * scale, ringInnerR * 0.8);
+    ctx.lineTo(ringX + 2 * scale, ringInnerR * 0.5);
+    ctx.lineTo(ringX - 1 * scale, ringInnerR * 0.2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+/**
+ * ============================================================================
+ * YESTIRI SODALITY RING WARSHIPS & MOBILE CITY SHIP CITADEL
+ * ============================================================================
+ * Nomadic ring-hull architecture:
+ * - Pure circular torus (ring) with completely open central circular space.
+ * - Pearlescent ceramic off-white / silver titanium composite armor plating.
+ * - Distinctive gold / bronze structural inlays, perimeter seams, and panel divides.
+ * - Forward bridge featuring an inward-projecting arm with a tall vertical monolith spire.
+ * - Observational dome flanked by stepped sensor wings with glowing cyan aperture slits.
+ * - Inner-rim terraced habitat city amphitheaters with glittering urban window lights.
+ * - Aft swept outrigger stabilizer fins and recessed multi-manifold ion thrusters.
+ * - Carbon copies at different scales: Destroyers up to the colossal City Ship (2nd largest unit in the game).
+ */
+export function drawYestiriShip(
+  ctx: CanvasRenderingContext2D,
+  ship: ShipEntity,
+  r: number,
+  timeMs: number,
+  isHostile: boolean,
+  isCityShip: boolean = false
+): void {
+  ctx.save();
+
+  const isCrippled = ship.hullState === 'CRIPPLED';
+  // Compute scale based on radius, City Ship is colossal
+  const baseScale = Math.max(0.5, r / 14.0);
+  const scale = isCityShip ? Math.max(baseScale, 4.8) : baseScale;
+
+  // Geometry dimensions
+  const outerR = 18.0 * scale;
+  const innerR = 9.5 * scale;
+  const midR = (outerR + innerR) * 0.5;
+  const voidR = 8.5 * scale;
+
+  // Color Palette
+  const armorBase = isHostile ? '#334155' : '#f8fafc';
+  const armorShade = isHostile ? '#1e293b' : '#cbd5e1';
+  const armorDark = isHostile ? '#0f172a' : '#94a3b8';
+  const goldTrim = isHostile ? '#9a3412' : '#d97706';
+  const goldHighlight = isHostile ? '#ea580c' : '#f59e0b';
+  const cyanGlow = isHostile ? '#f43f5e' : '#38bdf8';
+  const cyanCore = isHostile ? '#fda4af' : '#e0f2fe';
+  const cityLightAmber = '#fef08a';
+  const cityLightCyan = '#7dd3fc';
+
+  const isMoving = (ship.maxSpeed || 0) > 0 &&
+    ((ship.velocity && (ship.velocity.x !== 0 || ship.velocity.y !== 0)) || ship.splineActive);
+
+  // --------------------------------------------------------------------------
+  // 1. Aft Swept Outrigger Stabilizer Fins (Port & Starboard)
+  // --------------------------------------------------------------------------
+  const outriggerAngles = [Math.PI * 0.76, -Math.PI * 0.76]; // ~137° & -137°
+
+  for (const oAng of outriggerAngles) {
+    const isPort = oAng > 0;
+    const sign = isPort ? 1 : -1;
+    const rootX = Math.cos(oAng) * outerR;
+    const rootY = Math.sin(oAng) * outerR;
+
+    ctx.save();
+    ctx.beginPath();
+    // Base attachment
+    ctx.moveTo(rootX + 2 * scale, rootY - sign * 2 * scale);
+    // Swept tip extending outwards and backwards
+    const tipX = rootX - 9 * scale;
+    const tipY = rootY + sign * 8 * scale;
+    ctx.lineTo(tipX, tipY);
+    // Trailing edge notch
+    ctx.lineTo(tipX + 2.5 * scale, tipY - sign * 3.5 * scale);
+    ctx.lineTo(rootX - 3 * scale, rootY);
+    ctx.closePath();
+
+    ctx.fillStyle = armorBase;
+    ctx.fill();
+
+    // Gold leading edge border
+    ctx.strokeStyle = goldHighlight;
+    ctx.lineWidth = 1.4 * Math.min(scale, 2.5);
+    ctx.beginPath();
+    ctx.moveTo(rootX + 2 * scale, rootY - sign * 2 * scale);
+    ctx.lineTo(tipX, tipY);
+    ctx.stroke();
+
+    // Outrigger navigation strobe
+    const navBlink = (Math.sin(timeMs * 0.007 + (isPort ? 0 : Math.PI)) + 1) * 0.5;
+    if (navBlink > 0.5) {
+      ctx.fillStyle = isPort ? '#ef4444' : '#22c55e';
+      ctx.beginPath();
+      ctx.arc(tipX, tipY, 1.2 * Math.min(scale, 2.0), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  // --------------------------------------------------------------------------
+  // 2. Aft Thruster Nozzles & Ion Exhaust Plumes
+  // --------------------------------------------------------------------------
+  const thrusterArcs = [-0.25, 0, 0.25];
+  for (const arcOffset of thrusterArcs) {
+    const tAng = Math.PI + arcOffset;
+    const nx = Math.cos(tAng) * outerR;
+    const ny = Math.sin(tAng) * outerR;
+
+    ctx.save();
+    ctx.translate(nx, ny);
+    ctx.rotate(tAng);
+
+    // Recessed dark nozzle block
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(-1.5 * scale, -2.0 * scale, 3.5 * scale, 4.0 * scale);
+    ctx.strokeStyle = goldTrim;
+    ctx.lineWidth = 1.0 * Math.min(scale, 2.0);
+    ctx.strokeRect(-1.5 * scale, -2.0 * scale, 3.5 * scale, 4.0 * scale);
+
+    // Ion plume when burning
+    if (isMoving) {
+      const flumeLength = (6.0 + Math.sin(timeMs * 0.04 + arcOffset * 8) * 2.5) * scale;
+      const grad = ctx.createLinearGradient(0, 0, flumeLength, 0);
+      grad.addColorStop(0, cyanCore);
+      grad.addColorStop(0.3, cyanGlow);
+      grad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.moveTo(1.5 * scale, -1.8 * scale);
+      ctx.lineTo(flumeLength, 0);
+      ctx.lineTo(1.5 * scale, 1.8 * scale);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  // --------------------------------------------------------------------------
+  // 3. Main Armored Torus (Ring Body)
+  // --------------------------------------------------------------------------
+  ctx.save();
+
+  // Create donut path with counter-clockwise inner cutout
+  ctx.beginPath();
+  ctx.arc(0, 0, outerR, 0, Math.PI * 2, false);
+  ctx.arc(0, 0, innerR, 0, Math.PI * 2, true);
+  ctx.closePath();
+
+  // Cylindrical metallic ring shading gradient
+  const ringGrad = ctx.createRadialGradient(0, 0, innerR, 0, 0, outerR);
+  ringGrad.addColorStop(0.0, armorDark);
+  ringGrad.addColorStop(0.25, armorBase);
+  ringGrad.addColorStop(0.70, armorShade);
+  ringGrad.addColorStop(1.0, armorDark);
+
+  ctx.fillStyle = ringGrad;
+  ctx.fill();
+
+  // Outer and Inner Gold Trim Rims
+  ctx.strokeStyle = goldTrim;
+  ctx.lineWidth = 1.6 * Math.min(scale, 2.5);
+  ctx.stroke();
+
+  // Mid-ring Concentric Panel Seam
+  ctx.beginPath();
+  ctx.arc(0, 0, midR, 0, Math.PI * 2);
+  ctx.strokeStyle = goldHighlight;
+  ctx.lineWidth = 1.0 * Math.min(scale, 2.0);
+  ctx.stroke();
+
+  // Radial Gold Panel Divider Lines (every 30 degrees)
+  const sectorCount = isCityShip ? 24 : 12;
+  const stepRad = (Math.PI * 2) / sectorCount;
+  ctx.strokeStyle = goldTrim;
+  ctx.lineWidth = 0.9 * Math.min(scale, 2.0);
+
+  for (let i = 0; i < sectorCount; i++) {
+    const ang = i * stepRad;
+    const x1 = Math.cos(ang) * innerR;
+    const y1 = Math.sin(ang) * innerR;
+    const x2 = Math.cos(ang) * outerR;
+    const y2 = Math.sin(ang) * outerR;
+
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+
+  // --------------------------------------------------------------------------
+  // 4. Terraced Inner Habitat City Decks (Glittering Metropolis facing central void)
+  // --------------------------------------------------------------------------
+  const habitatArcs = [
+    { start: 0.35, end: 2.65 },  // Starboard flank
+    { start: -2.65, end: -0.35 } // Port flank
+  ];
+
+  for (const hArc of habitatArcs) {
+    const numSubSectors = isCityShip ? 14 : 6;
+    const arcSpan = hArc.end - hArc.start;
+    const subStep = arcSpan / numSubSectors;
+
+    for (let s = 0; s < numSubSectors; s++) {
+      const theta = hArc.start + s * subStep + subStep * 0.5;
+      const habRadius1 = innerR + 1.2 * scale;
+      const habRadius2 = innerR + 2.8 * scale;
+
+      const px1 = Math.cos(theta) * habRadius1;
+      const py1 = Math.sin(theta) * habRadius1;
+      const px2 = Math.cos(theta) * habRadius2;
+      const py2 = Math.sin(theta) * habRadius2;
+
+      // Small glowing city habitat window cluster
+      const isAmber = (s % 2 === 0);
+      ctx.fillStyle = isAmber ? cityLightAmber : cityLightCyan;
+      ctx.beginPath();
+      ctx.arc(px1, py1, 0.9 * Math.min(scale, 2.2), 0, Math.PI * 2);
+      ctx.fill();
+
+      if (isCityShip) {
+        ctx.fillStyle = isAmber ? cityLightCyan : cityLightAmber;
+        ctx.beginPath();
+        ctx.arc(px2, py2, 0.8 * Math.min(scale, 2.0), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // 5. Central Void Energy Resonance Field (City Ship & Mobile HQ)
+  // --------------------------------------------------------------------------
+  if (isCityShip) {
+    const pulse = (Math.sin(timeMs * 0.003) + 1) * 0.5;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(0, 0, voidR * 0.75, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(192, 132, 252, ${0.15 + pulse * 0.25})`;
+    ctx.lineWidth = 1.5 * scale;
+    ctx.stroke();
+
+    // Subtle faint gravitic containment lattice
+    ctx.beginPath();
+    ctx.arc(0, 0, voidR * 0.45, 0, Math.PI * 2);
+    ctx.strokeStyle = `rgba(56, 189, 248, ${0.12 + pulse * 0.2})`;
+    ctx.lineWidth = 1.0 * scale;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // --------------------------------------------------------------------------
+  // 6. Forward Command Bridge & Inward-Projecting Monolith Spire Arm
+  // --------------------------------------------------------------------------
+  // The bridge sits at the forward arc (+X).
+  // An arm extends INWARD into the open central space towards x = 0.
+  // Mounted atop this arm is the distinctive vertical monolith spire.
+  // (A) Bridge module base straddling the forward ring
+  const bridgeWidth = 10.0 * scale;
+  const bridgeDepth = 7.5 * scale;
+  ctx.fillStyle = armorBase;
+  ctx.beginPath();
+  ctx.moveTo(outerR - 1 * scale, -bridgeWidth * 0.5);
+  ctx.lineTo(outerR + bridgeDepth * 0.6, -bridgeWidth * 0.35);
+  ctx.lineTo(outerR + bridgeDepth * 0.6, bridgeWidth * 0.35);
+  ctx.lineTo(outerR - 1 * scale, bridgeWidth * 0.5);
+  ctx.lineTo(innerR + 1 * scale, bridgeWidth * 0.35);
+  ctx.lineTo(innerR + 1 * scale, -bridgeWidth * 0.35);
+  ctx.closePath();
+  ctx.fill();
+
+  ctx.strokeStyle = goldHighlight;
+  ctx.lineWidth = 1.5 * Math.min(scale, 2.5);
+  ctx.stroke();
+
+  // (B) Inward-Projecting Structural Arm (Reaching into central void)
+  const armWidth = 4.2 * scale;
+  const armTipX = innerR * 0.15; // Extends deep into central ring
+  ctx.beginPath();
+  ctx.moveTo(innerR + 1 * scale, -armWidth * 0.5);
+  ctx.lineTo(innerR * 0.5, -armWidth * 0.45);
+  ctx.lineTo(armTipX, 0); // Pointed faceted prow facing the center
+  ctx.lineTo(innerR * 0.5, armWidth * 0.45);
+  ctx.lineTo(innerR + 1 * scale, armWidth * 0.5);
+  ctx.closePath();
+
+  ctx.fillStyle = armorBase;
+  ctx.fill();
+  ctx.strokeStyle = goldTrim;
+  ctx.lineWidth = 1.3 * Math.min(scale, 2.2);
+  ctx.stroke();
+
+  // (C) Vertical Command Monolith Spire (Rendered with 3D drop-shading)
+  const spireX = innerR * 0.55;
+  const spireLen = 6.0 * scale;
+  const spireW = 2.2 * scale;
+
+  // Shadow casting on the arm
+  ctx.fillStyle = 'rgba(15, 23, 42, 0.45)';
+  ctx.beginPath();
+  ctx.moveTo(spireX - spireLen * 0.5, -spireW * 0.5);
+  ctx.lineTo(spireX + spireLen * 0.5, -spireW * 0.5 - 1.5 * scale);
+  ctx.lineTo(spireX + spireLen * 0.5 + 2 * scale, 0);
+  ctx.lineTo(spireX - spireLen * 0.5, 0);
+  ctx.closePath();
+  ctx.fill();
+
+  // Main spire blade
+  ctx.fillStyle = armorShade;
+  ctx.beginPath();
+  ctx.moveTo(spireX - spireLen * 0.5, -spireW * 0.5);
+  ctx.lineTo(spireX + spireLen * 0.5, -spireW * 0.2);
+  ctx.lineTo(spireX + spireLen * 0.5, spireW * 0.2);
+  ctx.lineTo(spireX - spireLen * 0.5, spireW * 0.5);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = goldHighlight;
+  ctx.lineWidth = 1.2 * Math.min(scale, 2.0);
+  ctx.stroke();
+
+  // Beacon at spire apex
+  const beaconBlink = (Math.sin(timeMs * 0.01) + 1) * 0.5;
+  ctx.fillStyle = beaconBlink > 0.4 ? cyanCore : cyanGlow;
+  ctx.beginPath();
+  ctx.arc(spireX + spireLen * 0.5, 0, 1.4 * Math.min(scale, 2.2), 0, Math.PI * 2);
+  ctx.fill();
+
+  // (D) Forward Shaded Dome (Observatory / Shield Projector Orb)
+  const domeX = outerR * 0.88;
+  const domeR = 2.8 * scale;
+  const domeGrad = ctx.createRadialGradient(
+    domeX - domeR * 0.3, -domeR * 0.3, domeR * 0.1,
+    domeX, 0, domeR
+  );
+  domeGrad.addColorStop(0, '#ffffff');
+  domeGrad.addColorStop(0.35, isHostile ? '#fda4af' : '#7dd3fc');
+  domeGrad.addColorStop(0.8, isHostile ? '#9f1239' : '#0369a1');
+  domeGrad.addColorStop(1.0, '#0c4a6e');
+
+  ctx.fillStyle = domeGrad;
+  ctx.beginPath();
+  ctx.arc(domeX, 0, domeR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = goldTrim;
+  ctx.lineWidth = 1.0 * Math.min(scale, 2.0);
+  ctx.stroke();
+
+  // (E) Flanking Stepped Sensor Wings with Glowing Cyan Apertures (3 per side)
+  const sensorWingYOffsets = [-5.2 * scale, 5.2 * scale];
+  for (const sY of sensorWingYOffsets) {
+    ctx.save();
+    ctx.translate(outerR * 0.82, sY);
+
+    // Sensor housing
+    ctx.fillStyle = armorDark;
+    ctx.fillRect(-1.5 * scale, -1.8 * scale, 3.0 * scale, 3.6 * scale);
+    ctx.strokeStyle = goldTrim;
+    ctx.lineWidth = 0.8 * Math.min(scale, 1.8);
+    ctx.strokeRect(-1.5 * scale, -1.8 * scale, 3.0 * scale, 3.6 * scale);
+
+    // 3 glowing cyan slit apertures
+    ctx.fillStyle = cyanGlow;
+    ctx.fillRect(-1.0 * scale, -1.2 * scale, 2.0 * scale, 0.6 * scale);
+    ctx.fillRect(-1.0 * scale, -0.3 * scale, 2.0 * scale, 0.6 * scale);
+    ctx.fillRect(-1.0 * scale, 0.6 * scale, 2.0 * scale, 0.6 * scale);
+
+    ctx.restore();
+  }
+
+  // --------------------------------------------------------------------------
+  // 7. Tactical Hardpoint Turrets along Outer Rim
+  // --------------------------------------------------------------------------
+  const turretAngles = [
+    Math.PI * 0.25, -Math.PI * 0.25,
+    Math.PI * 0.5, -Math.PI * 0.5
+  ];
+  for (const tAng of turretAngles) {
+    const tx = Math.cos(tAng) * (outerR - 1.5 * scale);
+    const ty = Math.sin(tAng) * (outerR - 1.5 * scale);
+
+    ctx.fillStyle = goldTrim;
+    ctx.beginPath();
+    ctx.arc(tx, ty, 1.4 * Math.min(scale, 2.2), 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = '#0f172a';
+    ctx.beginPath();
+    ctx.arc(tx, ty, 0.8 * Math.min(scale, 1.8), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // --------------------------------------------------------------------------
+  // 8. Mounted Research Orbital Modules (Dynamic Visual Upgrades on Hull)
+  // --------------------------------------------------------------------------
+  const mountedModules = ship.mountedResearchModules || [];
+  if (mountedModules.length > 0) {
+    // 6 hardpoint sockets distributed symmetrically across port & starboard flanks
+    const socketAngles = [
+      Math.PI * 0.28,  // Starboard forward-mid
+      -Math.PI * 0.28, // Port forward-mid
+      Math.PI * 0.52,  // Starboard beam
+      -Math.PI * 0.52, // Port beam
+      Math.PI * 0.68,  // Starboard aft-mid
+      -Math.PI * 0.68, // Port aft-mid
+    ];
+
+    mountedModules.forEach((modType, idx) => {
+      if (idx >= socketAngles.length) return;
+      const mAng = socketAngles[idx];
+      const mx = Math.cos(mAng) * outerR;
+      const my = Math.sin(mAng) * outerR;
+
+      ctx.save();
+      ctx.translate(mx, my);
+      ctx.rotate(mAng + Math.PI * 0.5);
+
+      const modScale = Math.min(scale, 2.5);
+
+      if (modType === 'MILITARY_RESEARCH') {
+        // Military Research Station: Angular red/slate armored ordnance pod
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(-2.2 * modScale, -1.5 * modScale, 4.4 * modScale, 3.0 * modScale);
+        ctx.fillStyle = '#e11d48';
+        ctx.fillRect(-1.4 * modScale, -2.2 * modScale, 2.8 * modScale, 1.2 * modScale);
+        ctx.strokeStyle = '#fda4af';
+        ctx.lineWidth = 0.8;
+        ctx.strokeRect(-2.2 * modScale, -1.5 * modScale, 4.4 * modScale, 3.0 * modScale);
+        // Blinking red laser sensor
+        const blink = (Math.sin(timeMs * 0.008 + idx) + 1) * 0.5;
+        ctx.fillStyle = blink > 0.4 ? '#f43f5e' : '#881337';
+        ctx.beginPath();
+        ctx.arc(0, -2.6 * modScale, 1.0 * modScale, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (modType === 'CIVIC_RESEARCH') {
+        // Civic Research Outpost: Glowing cyan bio-observation dome
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(-2.0 * modScale, -1.2 * modScale, 4.0 * modScale, 2.4 * modScale);
+        const domeGrad = ctx.createRadialGradient(0, -1.2 * modScale, 0.2 * modScale, 0, -1.2 * modScale, 2.0 * modScale);
+        domeGrad.addColorStop(0, '#e0f2fe');
+        domeGrad.addColorStop(0.5, '#06b6d4');
+        domeGrad.addColorStop(1, '#0e7490');
+        ctx.fillStyle = domeGrad;
+        ctx.beginPath();
+        ctx.arc(0, -1.2 * modScale, 1.8 * modScale, Math.PI, 0);
+        ctx.fill();
+        ctx.strokeStyle = '#67e8f9';
+        ctx.lineWidth = 0.8;
+        ctx.stroke();
+      } else {
+        // Expansion Citadel: Stepped gold/amber modular spire
+        ctx.fillStyle = '#78350f';
+        ctx.fillRect(-2.4 * modScale, -1.2 * modScale, 4.8 * modScale, 2.4 * modScale);
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillRect(-1.5 * modScale, -2.4 * modScale, 3.0 * modScale, 1.4 * modScale);
+        ctx.fillStyle = '#fde68a';
+        ctx.fillRect(-0.8 * modScale, -3.2 * modScale, 1.6 * modScale, 1.0 * modScale);
+        ctx.strokeStyle = '#d97706';
+        ctx.lineWidth = 0.8;
+        ctx.strokeRect(-2.4 * modScale, -1.2 * modScale, 4.8 * modScale, 2.4 * modScale);
+      }
+
+      ctx.restore();
+    });
+  }
+
+  // Crippled fire/smoke if damaged
+  if (isCrippled) {
+    const smokeFlicker = Math.sin(timeMs * 0.035) * 0.5 + 0.5;
+    ctx.fillStyle = `rgba(239, 68, 68, ${0.4 + smokeFlicker * 0.4})`;
+    ctx.beginPath();
+    ctx.arc(outerR * 0.4, outerR * 0.35, 4.0 * scale, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+/**
+ * ============================================================================
+ * LIAAL SPECIALIZED WARSHIP RENDERER (LIGHT, MEDIUM, HEAVY)
+ * ============================================================================
+ * Cargo & Terraforming Heavy Doctrine:
+ * - Light Warship (L-WS): 20 missiles / salvo, hexagonal side cargo pods, 4x5 missile grid
+ * - Medium Warship (M-WS): 45 missiles / salvo, twin terraforming biodomes, 5x9 missile grid
+ * - Heavy Warship (H-WS): 100 missiles / salvo, cataclysm titan, 10x10 VLS grid, atmospheric processing spires
+ * - Warm terracotta, industrial copper/brass armor, glowing bio-emerald life-synthesis conduits
+ */
+export function drawLiaalShip(
+  ctx: CanvasRenderingContext2D,
+  ship: ShipEntity,
+  r: number,
+  timeMs: number,
+  isHostile: boolean,
+  tier: 'LIGHT' | 'MEDIUM' | 'HEAVY' = 'LIGHT'
+): void {
+  ctx.save();
+
+  const isCrippled = ship.hullState === 'CRIPPLED';
+  const scale = tier === 'HEAVY'
+    ? Math.max(1.8, r / 12.0)
+    : tier === 'MEDIUM'
+    ? Math.max(1.2, r / 12.0)
+    : Math.max(0.75, r / 12.0);
+
+  // Liaal Earthy / Terracotta & Copper / Bio-Emerald Palette
+  const armorBase = isHostile ? '#431407' : '#9a3412';
+  const armorShade = isHostile ? '#270d04' : '#7c2d12';
+  const armorHighlight = isHostile ? '#78350f' : '#ea580c';
+  const copperTrim = isHostile ? '#78350f' : '#d97706';
+  const brassAccent = isHostile ? '#b45309' : '#f59e0b';
+  const emeraldGlow = isHostile ? '#f43f5e' : '#10b981';
+  const emeraldCore = isHostile ? '#fda4af' : '#6ee7b7';
+  const cargoBoxColor = isHostile ? '#334155' : '#047857';
+
+  const isMoving = (ship.maxSpeed || 0) > 0 &&
+    ((ship.velocity && (ship.velocity.x !== 0 || ship.velocity.y !== 0)) || ship.splineActive);
+
+  if (tier === 'LIGHT') {
+    // ------------------------------------------------------------------------
+    // LIGHT WARSHIP (L-WS): 20 Missiles Per Salvo (4x5 VLS grid)
+    // ------------------------------------------------------------------------
+    const length = 28 * scale;
+    const halfW = 12 * scale;
+
+    // 1. Dual Aft Thruster Exhausts
+    const thrusterY = [-halfW * 0.45, halfW * 0.45];
+    for (const ty of thrusterY) {
+      renderThrusterPlume(ctx, -length * 0.45, ty, 3.5 * scale, 14 * scale, isMoving, '#f59e0b', timeMs);
+    }
+
+    // 2. Primary Wedge/Wider Hull with Faceted Chamfers
+    ctx.fillStyle = armorBase;
+    ctx.strokeStyle = copperTrim;
+    ctx.lineWidth = 1.4 * Math.min(scale, 2.0);
+    ctx.beginPath();
+    ctx.moveTo(length * 0.52, 0); // Forward sharp prow
+    ctx.lineTo(length * 0.25, -halfW * 0.6);
+    ctx.lineTo(-length * 0.1, -halfW); // Broad cargo sponsons
+    ctx.lineTo(-length * 0.48, -halfW * 0.75); // Stern left
+    ctx.lineTo(-length * 0.48, halfW * 0.75); // Stern right
+    ctx.lineTo(-length * 0.1, halfW);
+    ctx.lineTo(length * 0.25, halfW * 0.6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 3. Flanking Hexagonal Cargo / Terraforming Reagent Canisters (2 on each side)
+    const canisterX = [-length * 0.15, length * 0.05];
+    for (const cx of canisterX) {
+      for (const side of [-1, 1]) {
+        const cy = side * (halfW * 0.75);
+        ctx.fillStyle = cargoBoxColor;
+        ctx.strokeStyle = brassAccent;
+        ctx.lineWidth = 0.9 * Math.min(scale, 1.8);
+        ctx.fillRect(cx - 2.5 * scale, cy - 2.0 * scale, 5.0 * scale, 4.0 * scale);
+        ctx.strokeRect(cx - 2.5 * scale, cy - 2.0 * scale, 5.0 * scale, 4.0 * scale);
+
+        // Bio-fluid level light
+        ctx.fillStyle = emeraldGlow;
+        ctx.fillRect(cx - 1.8 * scale, cy - 0.5 * scale, 3.6 * scale, 1.0 * scale);
+      }
+    }
+
+    // 4. Central 20-Tube Honeycomb VLS Matrix (4 columns x 5 rows)
+    const cols = 4;
+    const rows = 5;
+    const cellW = 1.8 * scale;
+    const cellH = 1.5 * scale;
+    const gridStartX = -length * 0.18;
+    const gridStartY = -((rows - 1) * cellH * 1.3) * 0.5;
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(gridStartX - 2 * scale, gridStartY - 2 * scale, cols * cellW * 1.35 + 2 * scale, rows * cellH * 1.35 + 2 * scale);
+    ctx.strokeStyle = brassAccent;
+    ctx.lineWidth = 0.8;
+    ctx.strokeRect(gridStartX - 2 * scale, gridStartY - 2 * scale, cols * cellW * 1.35 + 2 * scale, rows * cellH * 1.35 + 2 * scale);
+
+    for (let c = 0; c < cols; c++) {
+      for (let rIdx = 0; rIdx < rows; rIdx++) {
+        const mx = gridStartX + c * cellW * 1.35;
+        const my = gridStartY + rIdx * cellH * 1.35;
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(mx, my, cellW, cellH);
+
+        // Armed missile cap indicator (Red / Amber glowing warhead)
+        ctx.fillStyle = (c * 5 + rIdx + Math.floor(timeMs * 0.005)) % 4 === 0 ? '#ef4444' : '#f59e0b';
+        ctx.fillRect(mx + 0.3 * scale, my + 0.3 * scale, cellW - 0.6 * scale, cellH - 0.6 * scale);
+      }
+    }
+
+    // 5. Forward Terraforming Dispersal Emitter Lens
+    const pulse = (Math.sin(timeMs * 0.008) + 1) * 0.5;
+    ctx.fillStyle = pulse > 0.4 ? emeraldCore : emeraldGlow;
+    ctx.beginPath();
+    ctx.arc(length * 0.45, 0, 2.2 * scale, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = brassAccent;
+    ctx.lineWidth = 1.0;
+    ctx.stroke();
+
+  } else if (tier === 'MEDIUM') {
+    // ------------------------------------------------------------------------
+    // MEDIUM WARSHIP (M-WS): 45 Missiles Per Salvo (5x9 VLS grid)
+    // ------------------------------------------------------------------------
+    const length = 48 * scale;
+    const halfW = 20 * scale;
+
+    // 1. Quad Aft Thrusters
+    const thrusterY = [-halfW * 0.6, -halfW * 0.25, halfW * 0.25, halfW * 0.6];
+    for (const ty of thrusterY) {
+      renderThrusterPlume(ctx, -length * 0.48, ty, 4.0 * scale, 20 * scale, isMoving, '#ea580c', timeMs);
+    }
+
+    // 2. Heavy Twin-Catamaran Sponson Hull
+    ctx.fillStyle = armorBase;
+    ctx.strokeStyle = copperTrim;
+    ctx.lineWidth = 1.6 * Math.min(scale, 2.2);
+    ctx.beginPath();
+    ctx.moveTo(length * 0.50, 0);
+    ctx.lineTo(length * 0.35, -halfW * 0.4);
+    ctx.lineTo(length * 0.15, -halfW * 0.85); // Port catamaran prow
+    ctx.lineTo(-length * 0.45, -halfW * 0.85); // Port stern
+    ctx.lineTo(-length * 0.45, -halfW * 0.35);
+    ctx.lineTo(-length * 0.35, 0);             // Center recessed stern
+    ctx.lineTo(-length * 0.45, halfW * 0.35);
+    ctx.lineTo(-length * 0.45, halfW * 0.85);  // Stbd stern
+    ctx.lineTo(length * 0.15, halfW * 0.85);   // Stbd catamaran prow
+    ctx.lineTo(length * 0.35, halfW * 0.4);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 3. Twin Pressurized Terraforming Bio-Domes (Port & Stbd Sponsons)
+    for (const side of [-1, 1]) {
+      const domeX = -length * 0.05;
+      const domeY = side * (halfW * 0.62);
+      const domeR = 5.5 * scale;
+
+      const domeGrad = ctx.createRadialGradient(
+        domeX - domeR * 0.3, domeY - domeR * 0.3, domeR * 0.1,
+        domeX, domeY, domeR
+      );
+      domeGrad.addColorStop(0, '#ecfdf5');
+      domeGrad.addColorStop(0.4, '#10b981');
+      domeGrad.addColorStop(0.8, '#047857');
+      domeGrad.addColorStop(1.0, '#064e3b');
+
+      ctx.fillStyle = domeGrad;
+      ctx.beginPath();
+      ctx.arc(domeX, domeY, domeR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = brassAccent;
+      ctx.lineWidth = 1.2 * Math.min(scale, 2.0);
+      ctx.stroke();
+    }
+
+    // 4. Central 45-Tube Honeycomb VLS Matrix (9 columns x 5 rows = 45 tubes)
+    const cols = 9;
+    const rows = 5;
+    const cellW = 1.9 * scale;
+    const cellH = 1.6 * scale;
+    const gridStartX = -length * 0.22;
+    const gridStartY = -((rows - 1) * cellH * 1.3) * 0.5;
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(gridStartX - 2 * scale, gridStartY - 2 * scale, cols * cellW * 1.32 + 2 * scale, rows * cellH * 1.32 + 2 * scale);
+    ctx.strokeStyle = brassAccent;
+    ctx.lineWidth = 1.0;
+    ctx.strokeRect(gridStartX - 2 * scale, gridStartY - 2 * scale, cols * cellW * 1.32 + 2 * scale, rows * cellH * 1.32 + 2 * scale);
+
+    for (let c = 0; c < cols; c++) {
+      for (let rIdx = 0; rIdx < rows; rIdx++) {
+        const mx = gridStartX + c * cellW * 1.32;
+        const my = gridStartY + rIdx * cellH * 1.32;
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(mx, my, cellW, cellH);
+
+        const isArmed = (c * 5 + rIdx + Math.floor(timeMs * 0.006)) % 3 !== 0;
+        ctx.fillStyle = isArmed ? '#f97316' : '#ef4444';
+        ctx.fillRect(mx + 0.3 * scale, my + 0.3 * scale, cellW - 0.6 * scale, cellH - 0.6 * scale);
+      }
+    }
+
+    // 5. Forward Command Deck & Atmospheric Synthesis Spire
+    ctx.fillStyle = armorHighlight;
+    ctx.beginPath();
+    ctx.moveTo(length * 0.35, -halfW * 0.25);
+    ctx.lineTo(length * 0.52, 0);
+    ctx.lineTo(length * 0.35, halfW * 0.25);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = brassAccent;
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+  } else {
+    // ------------------------------------------------------------------------
+    // HEAVY WARSHIP (H-WS): 100 Missiles Per Salvo (10x10 Cataclysm Grid)
+    // ------------------------------------------------------------------------
+    const length = 82 * scale;
+    const halfW = 34 * scale;
+
+    // 1. 6 Heavy Fusion Exhaust Manifolds
+    const thrusterY = [-halfW * 0.7, -halfW * 0.42, -halfW * 0.15, halfW * 0.15, halfW * 0.42, halfW * 0.7];
+    for (const ty of thrusterY) {
+      renderThrusterPlume(ctx, -length * 0.50, ty, 5.0 * scale, 28 * scale, isMoving, '#f97316', timeMs);
+    }
+
+    // 2. Colossal Citadel Superstructure
+    ctx.fillStyle = armorShade;
+    ctx.strokeStyle = copperTrim;
+    ctx.lineWidth = 2.0 * Math.min(scale, 2.5);
+    ctx.beginPath();
+    ctx.moveTo(length * 0.52, 0);              // Massive forward ram
+    ctx.lineTo(length * 0.38, -halfW * 0.35);
+    ctx.lineTo(length * 0.22, -halfW * 0.88);  // Port forward outrigger
+    ctx.lineTo(-length * 0.46, -halfW * 0.88); // Port aft
+    ctx.lineTo(-length * 0.50, -halfW * 0.45);
+    ctx.lineTo(-length * 0.40, 0);             // Center keel notch
+    ctx.lineTo(-length * 0.50, halfW * 0.45);
+    ctx.lineTo(-length * 0.46, halfW * 0.88);  // Stbd aft
+    ctx.lineTo(length * 0.22, halfW * 0.88);   // Stbd forward outrigger
+    ctx.lineTo(length * 0.38, halfW * 0.35);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    // 3. Tiered Terraforming Biospheres & Atmospheric Cracking Spires (4 Bio-Domes)
+    const domeCoords = [
+      { x: length * 0.05, y: -halfW * 0.65 },
+      { x: -length * 0.22, y: -halfW * 0.65 },
+      { x: length * 0.05, y: halfW * 0.65 },
+      { x: -length * 0.22, y: halfW * 0.65 },
+    ];
+
+    domeCoords.forEach((dc) => {
+      const domeR = 6.8 * scale;
+      const domeGrad = ctx.createRadialGradient(
+        dc.x - domeR * 0.3, dc.y - domeR * 0.3, domeR * 0.1,
+        dc.x, dc.y, domeR
+      );
+      domeGrad.addColorStop(0, '#ecfdf5');
+      domeGrad.addColorStop(0.3, '#34d399');
+      domeGrad.addColorStop(0.7, '#059669');
+      domeGrad.addColorStop(1.0, '#022c22');
+
+      ctx.fillStyle = domeGrad;
+      ctx.beginPath();
+      ctx.arc(dc.x, dc.y, domeR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = brassAccent;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+    });
+
+    // 4. Cataclysm 100-Tube VLS Grid (10 columns x 10 rows = 100 tubes)
+    const cols = 10;
+    const rows = 10;
+    const cellW = 1.9 * scale;
+    const cellH = 1.6 * scale;
+    const gridStartX = -length * 0.28;
+    const gridStartY = -((rows - 1) * cellH * 1.25) * 0.5;
+
+    ctx.fillStyle = '#0f172a';
+    ctx.fillRect(gridStartX - 2.5 * scale, gridStartY - 2.5 * scale, cols * cellW * 1.25 + 3 * scale, rows * cellH * 1.25 + 3 * scale);
+    ctx.strokeStyle = brassAccent;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(gridStartX - 2.5 * scale, gridStartY - 2.5 * scale, cols * cellW * 1.25 + 3 * scale, rows * cellH * 1.25 + 3 * scale);
+
+    for (let c = 0; c < cols; c++) {
+      for (let rIdx = 0; rIdx < rows; rIdx++) {
+        const mx = gridStartX + c * cellW * 1.25;
+        const my = gridStartY + rIdx * cellH * 1.25;
+        ctx.fillStyle = '#1e293b';
+        ctx.fillRect(mx, my, cellW, cellH);
+
+        const tubeIndex = c * 10 + rIdx;
+        const isFiring = (tubeIndex + Math.floor(timeMs * 0.008)) % 5 === 0;
+        ctx.fillStyle = isFiring ? '#f43f5e' : (tubeIndex % 2 === 0 ? '#f59e0b' : '#ea580c');
+        ctx.fillRect(mx + 0.3 * scale, my + 0.3 * scale, cellW - 0.6 * scale, cellH - 0.6 * scale);
+      }
+    }
+
+    // 5. Grand Forward Planetary Seed Ram & Core Sensor Array
+    ctx.fillStyle = armorHighlight;
+    ctx.beginPath();
+    ctx.moveTo(length * 0.32, -halfW * 0.3);
+    ctx.lineTo(length * 0.54, 0);
+    ctx.lineTo(length * 0.32, halfW * 0.3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = brassAccent;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+
+    // Central core beacon
+    const titanPulse = (Math.sin(timeMs * 0.006) + 1) * 0.5;
+    ctx.fillStyle = titanPulse > 0.4 ? emeraldCore : emeraldGlow;
+    ctx.beginPath();
+    ctx.arc(length * 0.46, 0, 3.2 * scale, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Crippled smoke/fire effect
+  if (isCrippled) {
+    const smokeFlicker = Math.sin(timeMs * 0.035) * 0.5 + 0.5;
+    ctx.fillStyle = `rgba(239, 68, 68, ${0.4 + smokeFlicker * 0.4})`;
+    ctx.beginPath();
+    ctx.arc(-10 * scale, 4 * scale, 5.0 * scale, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+/**
+ * ============================================================================
+ * KOVAK ENCLAVE ANGULAR RHOMBOID WARSHIP RENDERER
+ * ============================================================================
+ * Volume over Quality & Industrial Swarm Architecture:
+ * - Aggressive diamond / angular rhomboid silhouette with sharp faceted plating
+ * - Steely dark gunmetal & crimson armor panels (#1c1917, #7f1d1d, #dc2626, #ef4444)
+ * - Central spine crease with recessed kinetic / missile troughs
+ * - Symmetrical lateral rhomboid outrigger sponsons
+ * - Multi-port aft angular drive thrusters with hot crimson / orange engine flares
+ * - Red tactical running lights and glowing weapon hardpoint blisters
+ */
+export function drawKovakShip(
+  ctx: CanvasRenderingContext2D,
+  ship: ShipEntity,
+  r: number,
+  timeMs: number,
+  isHostile: boolean
+): void {
+  ctx.save();
+
+  const isCrippled = ship.hullState === 'CRIPPLED';
+  const role = (ship.role || '').toUpperCase();
+  const isCapital = role.includes('BATTLE') || role.includes('DREAD') || role.includes('CARRIER');
+  const isCruiser = role.includes('CRUISER');
+  const isFrigate = role === 'FRIGATE' || role === 'MINER';
+
+  const scale = isCapital
+    ? Math.max(1.6, r / 14.0)
+    : isCruiser
+    ? Math.max(1.1, r / 14.0)
+    : Math.max(0.65, r / 14.0);
+
+  const length = isCapital ? 72 * scale : isCruiser ? 44 * scale : 26 * scale;
+  const halfW = isCapital ? 30 * scale : isCruiser ? 18 * scale : 11 * scale;
+
+  // Kovak Industrial Crimson & Gunmetal Palette
+  const armorBase = isHostile ? '#2d0606' : '#450a0a';
+  const armorPlate = isHostile ? '#450a0a' : '#7f1d1d';
+  const armorHighlight = isHostile ? '#7f1d1d' : '#991b1b';
+  const steelTrim = isHostile ? '#57534e' : '#78716c';
+  const redGlow = isHostile ? '#ef4444' : '#f87171';
+  const hotCore = isHostile ? '#fca5a5' : '#fee2e2';
+  const amberAccent = '#f59e0b';
+
+  const isMoving = (ship.maxSpeed || 0) > 0 &&
+    ((ship.velocity && (ship.velocity.x !== 0 || ship.velocity.y !== 0)) || ship.splineActive);
+
+  // 1. Aft Thruster Exhausts (Faceted Rhomboid Nozzle Housings)
+  const thrusterCount = isCapital ? 4 : 2;
+  const thrusterY = thrusterCount === 4
+    ? [-halfW * 0.55, -halfW * 0.20, halfW * 0.20, halfW * 0.55]
+    : [-halfW * 0.35, halfW * 0.35];
+
+  for (const ty of thrusterY) {
+    renderThrusterPlume(
+      ctx,
+      -length * 0.48,
+      ty,
+      (isCapital ? 4.5 : 3.2) * scale,
+      (isCapital ? 24 : 15) * scale,
+      isMoving,
+      '#ef4444',
+      timeMs
+    );
+  }
+
+  // 2. Primary Angular Rhomboid Hull (Diamond Silhouette with Chamfered Prow & Sponsons)
+  ctx.fillStyle = armorBase;
+  ctx.strokeStyle = steelTrim;
+  ctx.lineWidth = 1.5 * Math.min(scale, 2.2);
+  ctx.beginPath();
+  ctx.moveTo(length * 0.52, 0);                 // Forward sharp diamond nose
+  ctx.lineTo(length * 0.22, -halfW * 0.45);      // Forward-port diamond chamfer
+  ctx.lineTo(0, -halfW);                         // Port widest rhomboid apex
+  ctx.lineTo(-length * 0.35, -halfW * 0.75);     // Aft-port taper
+  ctx.lineTo(-length * 0.48, -halfW * 0.35);     // Port engine block
+  ctx.lineTo(-length * 0.42, 0);                 // Center stern notch
+  ctx.lineTo(-length * 0.48, halfW * 0.35);      // Stbd engine block
+  ctx.lineTo(-length * 0.35, halfW * 0.75);      // Aft-stbd taper
+  ctx.lineTo(0, halfW);                          // Stbd widest rhomboid apex
+  ctx.lineTo(length * 0.22, halfW * 0.45);       // Forward-stbd diamond chamfer
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // 3. Faceted Raised Rhomboid Armor Slabs (Layered Symmetrical Sponsons)
+  ctx.fillStyle = armorPlate;
+  ctx.strokeStyle = armorHighlight;
+  ctx.lineWidth = 1.2 * Math.min(scale, 2.0);
+
+  // Port Rhomboid Armor Slab
+  ctx.beginPath();
+  ctx.moveTo(length * 0.18, -halfW * 0.35);
+  ctx.lineTo(0, -halfW * 0.85);
+  ctx.lineTo(-length * 0.26, -halfW * 0.62);
+  ctx.lineTo(-length * 0.10, -halfW * 0.22);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Starboard Rhomboid Armor Slab
+  ctx.beginPath();
+  ctx.moveTo(length * 0.18, halfW * 0.35);
+  ctx.lineTo(0, halfW * 0.85);
+  ctx.lineTo(-length * 0.26, halfW * 0.62);
+  ctx.lineTo(-length * 0.10, halfW * 0.22);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // 4. Central Spine & Longitudinal Recessed Weapons Trench
+  ctx.fillStyle = '#0c0a09';
+  ctx.fillRect(-length * 0.30, -1.8 * scale, length * 0.62, 3.6 * scale);
+  ctx.strokeStyle = steelTrim;
+  ctx.lineWidth = 0.8;
+  ctx.strokeRect(-length * 0.30, -1.8 * scale, length * 0.62, 3.6 * scale);
+
+  // Diamond centerline seam highlight
+  ctx.strokeStyle = armorHighlight;
+  ctx.lineWidth = 1.0 * Math.min(scale, 1.8);
+  ctx.beginPath();
+  ctx.moveTo(length * 0.48, 0);
+  ctx.lineTo(-length * 0.38, 0);
+  ctx.stroke();
+
+  // 5. Kovak Mass-Production Chevron Markings & Weapon Hardpoints
+  ctx.fillStyle = redGlow;
+  // Forward prow chevron
+  ctx.beginPath();
+  ctx.moveTo(length * 0.35, -2.5 * scale);
+  ctx.lineTo(length * 0.44, 0);
+  ctx.lineTo(length * 0.35, 2.5 * scale);
+  ctx.lineTo(length * 0.30, 2.5 * scale);
+  ctx.lineTo(length * 0.38, 0);
+  ctx.lineTo(length * 0.30, -2.5 * scale);
+  ctx.closePath();
+  ctx.fill();
+
+  // Lateral hardpoint turrets / blisters
+  const hardpoints = [
+    { x: length * 0.12, y: -halfW * 0.4 },
+    { x: -length * 0.12, y: -halfW * 0.45 },
+    { x: length * 0.12, y: halfW * 0.4 },
+    { x: -length * 0.12, y: halfW * 0.45 },
+  ];
+
+  hardpoints.forEach((hp) => {
+    ctx.fillStyle = '#1c1917';
+    ctx.beginPath();
+    ctx.arc(hp.x, hp.y, 1.8 * scale, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = redGlow;
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+
+    // Hot firing emitter / sensor diode
+    ctx.fillStyle = redGlow;
+    ctx.beginPath();
+    ctx.arc(hp.x, hp.y, 0.8 * scale, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // 6. Tactical Red Running / Strobe Lights
+  const blink = (Math.sin(timeMs * 0.009) + 1) * 0.5;
+  ctx.fillStyle = blink > 0.4 ? hotCore : redGlow;
+
+  // Wingtip strobe nodes (at the rhomboid apexes)
+  ctx.beginPath();
+  ctx.arc(0, -halfW + 1 * scale, 1.4 * Math.min(scale, 2.0), 0, Math.PI * 2);
+  ctx.arc(0, halfW - 1 * scale, 1.4 * Math.min(scale, 2.0), 0, Math.PI * 2);
+  ctx.fill();
+
+  // Crippled smoke/fire effect
+  if (isCrippled) {
+    const smokeFlicker = Math.sin(timeMs * 0.035) * 0.5 + 0.5;
+    ctx.fillStyle = `rgba(239, 68, 68, ${0.4 + smokeFlicker * 0.4})`;
+    ctx.beginPath();
+    ctx.arc(-8 * scale, 3 * scale, 4.5 * scale, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+

@@ -21,8 +21,10 @@ export interface DiagnosticReport {
   unlockRequirement: string | null;
   costM: number;
   costO: number;
+  costNeridium?: number;
   deficitM: number;
   deficitO: number;
+  deficitNeridium?: number;
   gateType?: 'RESEARCH' | 'SLIPWAY' | 'MOORING' | 'RESOURCE' | 'READY';
   status: 'READY' | 'UNBUILDABLE';
   color: string;
@@ -89,6 +91,7 @@ export interface ShipSpecConfig {
   classification: string;
   costM: number;
   costO: number;
+  neridiumCost?: number;
   buildTicks: number;
   techPrereqId: string;
   techPrereqName: string;
@@ -341,6 +344,34 @@ export const SHIP_CONFIGS: Record<string, ShipSpecConfig> = {
     requiredShipyardTier: 'Heavy',
     specs: { hull: 2500, shield: 6000, tubes: 10, pdBeams: 8, speed: 80, range: 1600 },
   },
+  CITY_SHIP: {
+    role: 'CITY_SHIP',
+    code: 'CS',
+    name: 'City Ship',
+    classification: 'Super-Capital Mobile Habitat Fortress',
+    costM: 52000,
+    costO: 16000,
+    neridiumCost: 100,
+    buildTicks: 140,
+    techPrereqId: 'mil-t10',
+    techPrereqName: 'Yestiri City Ship Genesis Blueprint',
+    requiredShipyardTier: 'Heavy',
+    specs: { hull: 5000, shield: 12000, tubes: 18, pdBeams: 12, speed: 60, range: 2200 },
+  },
+  CS: {
+    role: 'CITY_SHIP',
+    code: 'CS',
+    name: 'City Ship',
+    classification: 'Super-Capital Mobile Habitat Fortress',
+    costM: 52000,
+    costO: 16000,
+    neridiumCost: 100,
+    buildTicks: 140,
+    techPrereqId: 'mil-t10',
+    techPrereqName: 'Yestiri City Ship Genesis Blueprint',
+    requiredShipyardTier: 'Heavy',
+    specs: { hull: 5000, shield: 12000, tubes: 18, pdBeams: 12, speed: 60, range: 2200 },
+  },
   MINER: {
     role: 'MINER',
     code: 'MINER',
@@ -502,8 +533,8 @@ export const SHIP_CONFIGS: Record<string, ShipSpecConfig> = {
 /**
  * Resolves current HQ stockpile quantities directly from primary simulation state.
  */
-export function getHQStockpiles(state: GameState): { metallic: number; organic: number } {
-  if (!state) return { metallic: 0, organic: 0 };
+export function getHQStockpiles(state: GameState): { metallic: number; organic: number; neridium?: number; ore?: number } {
+  if (!state) return { metallic: 0, organic: 0, neridium: 0, ore: 0 };
   if (typeof state.getHQResources === 'function') {
     return state.getHQResources();
   }
@@ -513,7 +544,7 @@ export function getHQStockpiles(state: GameState): { metallic: number; organic: 
   if ((state as any).hqStockpiles) {
     return (state as any).hqStockpiles;
   }
-  return { metallic: 0, organic: 0 };
+  return { metallic: 0, organic: 0, neridium: 0, ore: 0 };
 }
 
 /**
@@ -547,7 +578,7 @@ export function getSupportedHullsForStructure(structure?: StructureEntity | null
       'FG', 'FRIGATE', 'DD', 'DESTROYER', 'CL', 'LIGHT_CRUISER', 'MINER', 'MN',
       'CH', 'HEAVY_CRUISER', 'BC', 'BATTLECRUISER',
       'COL', 'COLLIER', 'TNK', 'TANKER', 'REP', 'REPAIR', 'REP_SHIP', 'SCP', 'SCRAP', 'SALVAGER',
-      'BB', 'BATTLESHIP', 'DN', 'DREADNOUGHT', 'CV', 'CARRIER', 'CVF', 'SUPER_CARRIER'
+      'BB', 'BATTLESHIP', 'DN', 'DREADNOUGHT', 'CV', 'CARRIER', 'CVF', 'SUPER_CARRIER', 'CS', 'CITY_SHIP'
     ];
   }
   return ['FG', 'FRIGATE', 'DD', 'DESTROYER', 'MINER', 'MN'];
@@ -562,7 +593,7 @@ export function getTechPrereqForHull(hullRoleOrCode: string): {
   branch: string;
   tier: number;
 } | null {
-  const norm = (hullRoleOrCode || '').toUpperCase().replace(/\s+/g, '_');
+  const norm = String(hullRoleOrCode || '').toUpperCase().replace(/\s+/g, '_');
   const techId = HULL_UNLOCK_REQUIREMENTS[norm] || SHIP_CONFIGS[norm]?.techPrereqId;
   if (!techId) return null;
   const tech = RESEARCH_CATALOG[techId];
@@ -813,13 +844,16 @@ export function resolveShipyardDiagnostics(
   activeStructure: StructureEntity | null | undefined,
   state: GameState
 ): DiagnosticReport {
-  const normKey = (shipClass || '').toUpperCase().replace(/\s+/g, '_');
+  const normKey = String(shipClass || '').toUpperCase().replace(/\s+/g, '_');
   const spec = SHIP_CONFIGS[normKey] || SHIP_CONFIGS[shipClass] || SHIP_CONFIGS['FRIGATE'];
   const hqStock = getHQStockpiles(state);
   const costM = spec.costM;
   const costO = spec.costO;
+  const costNer = spec.neridiumCost || 0;
+  const curNer = hqStock.neridium ?? (state.resources as any)?.neridium ?? 0;
   const deficitM = Math.max(0, costM - hqStock.metallic);
   const deficitO = Math.max(0, costO - hqStock.organic);
+  const deficitNer = Math.max(0, costNer - curNer);
 
   const unlockedSet: Set<string> =
     state?.unlockedTechs instanceof Set
@@ -834,10 +868,12 @@ export function resolveShipyardDiagnostics(
     spec.code === 'DN' ||
     spec.code === 'CV' ||
     spec.code === 'CVF' ||
+    spec.code === 'CS' ||
     spec.role === 'BATTLESHIP' ||
     spec.role === 'DREADNOUGHT' ||
     spec.role === 'CARRIER' ||
-    spec.role === 'SUPER_CARRIER'
+    spec.role === 'SUPER_CARRIER' ||
+    spec.role === 'CITY_SHIP'
       ? 'Heavy'
       : spec.code === 'CL' || spec.role === 'LIGHT_CRUISER'
       ? 'Light'
@@ -939,12 +975,35 @@ export function resolveShipyardDiagnostics(
         'Mine raw ore with Autonomous Miners or expand HQ Refinery conversion tracks',
       costM,
       costO,
+      costNeridium: costNer,
       deficitM,
       deficitO,
+      deficitNeridium: deficitNer,
       gateType: 'RESOURCE',
       status: 'UNBUILDABLE',
       color: '#ff6644',
       reason: 'STOCKPILE DEFICIT: Insufficient materials in HQ storage',
+    };
+  }
+
+  if (deficitNer > 0) {
+    return {
+      isAvailable: false,
+      statusTag: '[INSUFFICIENT NERIDIUM]',
+      statusColor: '#c084fc',
+      failureReason: `NERIDIUM DEFICIT: Requires ${costNer} Neridium (${Math.round(curNer)} available)`,
+      unlockRequirement:
+        'Refine raw ore at HQ Refinery tracks to yield rare Neridium byproducts (1 per 5,000 ore)',
+      costM,
+      costO,
+      costNeridium: costNer,
+      deficitM: 0,
+      deficitO: 0,
+      deficitNeridium: deficitNer,
+      gateType: 'RESOURCE',
+      status: 'UNBUILDABLE',
+      color: '#c084fc',
+      reason: `NERIDIUM DEFICIT: Requires ${costNer} Neridium (${Math.round(curNer)} available)`,
     };
   }
 
@@ -957,12 +1016,14 @@ export function resolveShipyardDiagnostics(
     unlockRequirement: null,
     costM,
     costO,
+    costNeridium: costNer,
     deficitM: 0,
     deficitO: 0,
+    deficitNeridium: 0,
     gateType: 'READY',
     status: 'READY',
     color: '#00ff88',
-    reason: `CLICK TO COMMIT: -${costM.toLocaleString()} Metallic / -${costO.toLocaleString()} Organic`,
+    reason: `CLICK TO COMMIT: -${costM.toLocaleString()} Metallic / -${costO.toLocaleString()} Organic${costNer > 0 ? ` / -${costNer} Neridium` : ''}`,
   };
 }
 

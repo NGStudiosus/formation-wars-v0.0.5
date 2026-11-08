@@ -3,6 +3,9 @@ import {
   PlanetEntity,
   AsteroidNode,
 } from '../simulation/celestialTypes';
+import { ResourceInventory, RefineryProgressState, FactionId, GameSetupConfig } from '../types';
+
+export { type ResourceInventory, type RefineryProgressState };
 
 export interface ResearchTask {
 
@@ -58,8 +61,17 @@ export interface GravityWellEntity {
   [key: string]: any;
 }
 
+export interface DebugState {
+  revealAllMap: boolean;      // Bypasses all sensor checks and fog-of-war masks
+  freeResearch: boolean;       // Research completes instantly with 0 cost
+}
+
 export interface GameState {
+  debugState?: DebugState;
   gameStatus?: GameStatus;
+  factionId?: FactionId;
+  playerFaction?: FactionId;
+  gameSetupConfig?: GameSetupConfig;
   systems?: StarSystemDescriptor[];
   planets?: PlanetEntity[];
   asteroids?: AsteroidNode[];
@@ -73,7 +85,21 @@ export interface GameState {
   asteroidMap?: Map<string, AsteroidNode>;
   structures?: StructureEntity[];
   ships?: any[];
+  resources?: ResourceInventory;
+  refineryProgress?: RefineryProgressState;
+  notifications?: Array<{
+    id: string;
+    type: string;
+    message: string;
+    timestamp?: number | string;
+  }>;
   hqStockpiles?: Stockpiles;
+  research?: {
+    completedTechIds: string[];
+    activeTechId: string | null;
+    progress: number;
+    [key: string]: any;
+  };
   activeResearch?: {
     military?: ResearchTask | null;
     civic?: ResearchTask | null;
@@ -157,6 +183,18 @@ export function calculateResearchTokens(state: GameState | any): ResearchTokens 
     else if (type === 'EXC' || type === 'EXPANSION_CITADEL') expansion++;
   }
 
+  // Count integrated research orbital modules mounted directly on Yestiri City Ship HQ hull
+  const shipsList: any[] = Array.isArray(state.ships) ? state.ships : [];
+  for (const ship of shipsList) {
+    if (ship && (ship.role === 'HQ' || ship.role === 'CITY_SHIP') && Array.isArray(ship.mountedResearchModules)) {
+      for (const mod of ship.mountedResearchModules) {
+        if (mod === 'MRS' || mod === 'MILITARY_RESEARCH') military++;
+        else if (mod === 'CRO' || mod === 'CIVIC_RESEARCH') civilian++;
+        else if (mod === 'EXC' || mod === 'EXPANSION_CITADEL') expansion++;
+      }
+    }
+  }
+
   // HQ tokens pool 1:1 from all constructed laboratories (dual emission)
   const headquarters = military + civilian + expansion;
 
@@ -180,6 +218,8 @@ export function getOperationalLabCounts(state: GameState | any) {
 
 export const state: GameState = {
   gameStatus: 'SETUP',
+  factionId: 'NOVAN',
+  playerFaction: 'NOVAN',
   systems: [],
   planets: [],
   asteroids: [],
@@ -201,6 +241,15 @@ export const state: GameState = {
     headquarters: null,
   },
   unlockedTechs: new Set<string>(),
+  research: {
+    completedTechIds: [],
+    activeTechId: null,
+    progress: 0,
+  },
+  debugState: {
+    revealAllMap: false,
+    freeResearch: false,
+  },
   researchStations: {
     military: 0,
     civic: 0,

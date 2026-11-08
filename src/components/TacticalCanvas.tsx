@@ -10,6 +10,9 @@ import {
   renderCherenkovJumpTrail,
   renderCherenkovSpoolGlow,
   renderGalacticJumpConduit,
+  getShipVisualScaleMultiplier,
+  isCitadelEntity,
+  isOrbitalStructureEntity,
 } from './shipRenderer';
 import {
   renderSolarSystem,
@@ -18,6 +21,7 @@ import {
   drawEnhancedSystemStar,
   drawEnhancedPlanet,
 } from './celestialRenderer';
+import { drawGarnPlanetaryRingHQ } from './structureRenderer';
 import { getShipHullSpec } from '../simulation/shipPrototypes';
 import { raycastSelectShip, marqueeSelectShips } from '../simulation/selectionController';
 import { PlanetaryCard } from './PlanetaryCard';
@@ -34,6 +38,26 @@ import {
   getCanvasLodTier,
   CanvasLodTier,
 } from '../simulation/cameraController';
+import { FACTION_REGISTRY } from '../simulation/factions/factionRegistry';
+
+export function getShipFactionPalette(ship: any) {
+  if (ship?.factionId && FACTION_REGISTRY[ship.factionId]) {
+    const meta = FACTION_REGISTRY[ship.factionId];
+    return {
+      primary: meta.primaryColor,
+      accent: meta.accentColor,
+      tag: meta.tag,
+      name: meta.name,
+    };
+  }
+  const isFriendly = ship?.faction === 'FRIENDLY';
+  return {
+    primary: isFriendly ? '#38bdf8' : '#ef4444',
+    accent: isFriendly ? '#00f0ff' : '#f43f5e',
+    tag: isFriendly ? 'FRN' : 'HST',
+    name: isFriendly ? 'Friendly' : 'Hostile',
+  };
+}
 
 interface TacticalCanvasProps {
   engine: SimulationEngine;
@@ -69,12 +93,18 @@ function findPlanetUnderCursor(
     systemsToScan.push(engine.solarSystem);
   }
 
+  // Sensible hit radius across zoom tiers:
+  // At close zoom (zoom > 0.05), give a reasonable 16px screen cushion.
+  // At overview zoom (zoom <= 0.05), clamp screen tolerance to 10px so planet hitboxes don't swallow entire star systems.
+  const screenTol = zoom < 0.01 ? 10 : 16;
+  const safeZoom = Math.max(0.0002, zoom);
+
   for (const sys of systemsToScan) {
     // Check rocky planets first
     for (const planet of sys.rockyPlanets) {
       const d = Math.hypot(worldPos.x - planet.pos.x, worldPos.y - planet.pos.y);
-      const screenRadius = Math.max(planet.radius * zoom, 32);
-      const worldRadius = screenRadius / zoom;
+      const screenRadius = Math.min(Math.max(planet.radius * zoom, screenTol), 60);
+      const worldRadius = screenRadius / safeZoom;
       if (d <= worldRadius) {
         return planet;
       }
@@ -83,8 +113,8 @@ function findPlanetUnderCursor(
     // Check gas giants
     for (const giant of sys.gasGiants) {
       const d = Math.hypot(worldPos.x - giant.pos.x, worldPos.y - giant.pos.y);
-      const screenRadius = Math.max(giant.radius * zoom, 44);
-      const worldRadius = screenRadius / zoom;
+      const screenRadius = Math.min(Math.max(giant.radius * zoom, screenTol * 1.3), 80);
+      const worldRadius = screenRadius / safeZoom;
       if (d <= worldRadius) {
         return giant;
       }
@@ -204,8 +234,14 @@ function renderGalacticFleetMarkers(
     ctx.restore();
   });
 
-  // 2. Group hostile ships into spatial clusters
-  const hostiles = activeShips.filter((s) => s.faction === 'HOSTILE');
+  // 2. Group hostile ships into spatial clusters (strictly within allied sensor horizon: passive or radar detection)
+  const hostiles = activeShips.filter(
+    (s) =>
+      s.faction === 'HOSTILE' &&
+      s.visibilityTier !== undefined &&
+      s.visibilityTier !== 'NONE' &&
+      s.visibilityState !== 'HIDDEN'
+  );
   const hostileClusters: ShipEntity[][] = [];
 
   for (const ship of hostiles) {
@@ -290,6 +326,9 @@ function renderGalacticJumpShips(
 ) {
   for (const ship of ships) {
     if (!ship || ship.hullState === 'DESTROYED') continue;
+    if (ship.faction === 'HOSTILE' && (!ship.visibilityTier || ship.visibilityTier === 'NONE' || ship.visibilityState === 'HIDDEN')) {
+      continue;
+    }
 
     if (ship.jumpState === 'IN_TRANSIT' || ship.jumpState === 'TRANSIT') {
       const orig = ship.jumpTransitData?.departurePoint || ship.jumpOrigin || ship.pos;
@@ -371,6 +410,11 @@ export function drawFogOfWarOverlay(
   playerEmitters: { x: number; y: number; radarR: number }[],
   state?: any
 ) {
+  // If map reveal cheat is active, bypass FOW rendering entirely
+  if (state?.debugState?.revealAllMap || state?.state?.debugState?.revealAllMap) {
+    return;
+  }
+
   const buffer = getFogBuffer(width, height);
   if (!buffer) return;
   const { canvas: fCanvas, ctx: fCtx } = buffer;
@@ -534,6 +578,21 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
     }
   }, [cameraFocusTarget, onCameraFocusHandled]);
 
+  // Ensure initial camera position centers over the player's flagship or homeworld if at (0, 0)
+  useEffect(() => {
+    if (cameraRef.current.x === 0 && cameraRef.current.y === 0) {
+      const friendly = (engine.ships ?? []).find((s) => s && s.faction === 'FRIENDLY' && s.hullState !== 'DESTROYED');
+      const homeworldPlanet = engine.solarSystem?.primaryHabitablePlanet || (engine as any).systems?.[0]?.solarSystem?.primaryHabitablePlanet;
+      if (friendly) {
+        cameraRef.current.x = friendly.pos.x;
+        cameraRef.current.y = friendly.pos.y;
+      } else if (homeworldPlanet) {
+        cameraRef.current.x = homeworldPlanet.pos.x;
+        cameraRef.current.y = homeworldPlanet.pos.y;
+      }
+    }
+  }, [engine]);
+
   // Coordinate Conversion (Screen to World and World to Screen)
   // Maintains exact floating-point precision at all zoom extents:
   // screenX = (worldX - cam.x) * cam.zoom + width * 0.5
@@ -613,6 +672,9 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
     const height = fullH / dpr;
     const cam = cameraRef.current;
 
+    // Guarantee clean context matrix transform scaled for DPI on every frame
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
     // Clear Screen (Tactical Dark Canvas #080c12)
     ctx.fillStyle = '#080c12';
     ctx.fillRect(0, 0, width, height);
@@ -650,30 +712,38 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
       gridStroke = '#0f1722';
     }
 
-    const leftWorld = (0 - width * 0.5) / cam.zoom + cam.x;
-    const rightWorld = (width - width * 0.5) / cam.zoom + cam.x;
-    const topWorld = (0 - height * 0.5) / cam.zoom + cam.y;
-    const bottomWorld = (height - height * 0.5) / cam.zoom + cam.y;
+    const safeZoom = isFinite(cam.zoom) && cam.zoom > 0 ? cam.zoom : 0.38;
+    const safeCamX = isFinite(cam.x) ? cam.x : 0;
+    const safeCamY = isFinite(cam.y) ? cam.y : 0;
+    const leftWorld = (0 - width * 0.5) / safeZoom + safeCamX;
+    const rightWorld = (width - width * 0.5) / safeZoom + safeCamX;
+    const topWorld = (0 - height * 0.5) / safeZoom + safeCamY;
+    const bottomWorld = (height - height * 0.5) / safeZoom + safeCamY;
 
     const startGridX = Math.floor(leftWorld / worldGridStep) * worldGridStep;
     const endGridX = Math.ceil(rightWorld / worldGridStep) * worldGridStep;
     const startGridY = Math.floor(topWorld / worldGridStep) * worldGridStep;
     const endGridY = Math.ceil(bottomWorld / worldGridStep) * worldGridStep;
 
-    ctx.strokeStyle = gridStroke;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let gx = startGridX; gx <= endGridX; gx += worldGridStep) {
-      const [sx] = worldToScreen(gx, 0, width, height);
-      ctx.moveTo(sx, 0);
-      ctx.lineTo(sx, height);
+    const xSteps = Math.round((endGridX - startGridX) / worldGridStep);
+    const ySteps = Math.round((endGridY - startGridY) / worldGridStep);
+
+    if (xSteps > 0 && xSteps < 200 && ySteps > 0 && ySteps < 200) {
+      ctx.strokeStyle = gridStroke;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let gx = startGridX; gx <= endGridX; gx += worldGridStep) {
+        const [sx] = worldToScreen(gx, 0, width, height);
+        ctx.moveTo(sx, 0);
+        ctx.lineTo(sx, height);
+      }
+      for (let gy = startGridY; gy <= endGridY; gy += worldGridStep) {
+        const [, sy] = worldToScreen(0, gy, width, height);
+        ctx.moveTo(0, sy);
+        ctx.lineTo(width, sy);
+      }
+      ctx.stroke();
     }
-    for (let gy = startGridY; gy <= endGridY; gy += worldGridStep) {
-      const [, sy] = worldToScreen(0, gy, width, height);
-      ctx.moveTo(0, sy);
-      ctx.lineTo(width, sy);
-    }
-    ctx.stroke();
 
     if (cam.zoom <= 0.0008) {
       ctx.fillStyle = 'rgba(71, 85, 105, 0.45)';
@@ -728,27 +798,22 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
     for (const sys of systemsToRender) {
       if (sys.solarSystem) {
         renderSolarSystem(ctx, sys.solarSystem, cam, width, height, worldToScreen, jumpModeActive, sys);
+      } else {
+        // Celestial pass fallback: Call drawEnhancedSystemStar for standalone system star
+        const starRadius = sys.starRadius || 5200;
+        const starType = sys.starType || 'YELLOW_DWARF';
+        drawEnhancedSystemStar(
+          ctx,
+          {
+            x: sys.center?.x ?? 0,
+            y: sys.center?.y ?? 0,
+            radius: starRadius,
+            starType,
+          },
+          camViewport,
+          currentTick
+        );
       }
-      // Celestial pass: Call drawEnhancedSystemStar for each system's central star
-      const starRadius = sys.starRadius || sys.solarSystem?.star?.radius || 5200;
-      const starType = sys.starType || (
-        sys.solarSystem?.star?.spectralClass?.startsWith('B') || sys.solarSystem?.star?.spectralClass?.startsWith('O')
-          ? 'BLUE_GIANT'
-          : sys.solarSystem?.star?.spectralClass?.startsWith('M')
-          ? 'RED_DWARF'
-          : 'YELLOW_DWARF'
-      );
-      drawEnhancedSystemStar(
-        ctx,
-        {
-          x: sys.center?.x ?? sys.solarSystem?.star?.pos?.x ?? 0,
-          y: sys.center?.y ?? sys.solarSystem?.star?.pos?.y ?? 0,
-          radius: starRadius,
-          starType,
-        },
-        camViewport,
-        currentTick
-      );
 
       // Celestial pass: Call drawEnhancedPlanet for each planet, passing sys.center as starCenter
       const starCenter = sys.center || sys.solarSystem?.star?.pos || { x: 0, y: 0 };
@@ -760,6 +825,16 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
           ];
       for (const planet of systemPlanets) {
         drawEnhancedPlanet(ctx, planet, starCenter, camViewport);
+
+        // Garn Planetary Ring HQ (renders around host planet with HQ anchor)
+        const garnHq = (engine.ships ?? []).find((s) => s && s.role === 'HQ' && (s.hqType === 'GARN_RING_CITADEL' || s.isGarnRing || s.factionId === 'GARN' || (s.faction as any) === 'GARN')) || (engine as any).getHQ?.();
+        const isHostPlanetForRing = Boolean(
+          garnHq && (garnHq.isGarnRing || garnHq.hqType === 'GARN_RING_CITADEL') &&
+          ((planet as any).hasHQ || (planet as any).isHomeworld || garnHq.capturedReferenceFrame?.id === planet.id)
+        );
+        if (isHostPlanetForRing) {
+          drawGarnPlanetaryRingHQ(ctx, garnHq, { ...planet, starCenter }, camViewport);
+        }
       }
     }
 
@@ -942,7 +1017,14 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
     const hqStation = (engine.ships ?? []).find((s) => s && s.role === 'HQ' && s.hullState !== 'DESTROYED');
     if (hqStation) {
       const [hx, hy] = worldToScreen(hqStation.pos.x, hqStation.pos.y, width, height);
-      const dockR = (hqStation.dockingRadius || 150.0) * cam.zoom;
+      const isRing = Boolean(hqStation.isRingStructure || hqStation.hqType === 'GARN_RING_CITADEL' || hqStation.isGarnRing);
+      const ringOuterKm = isRing ? (hqStation.ringOuterRadius || hqStation.radius || 1100) : 0;
+      const transferDistanceKm = 250.0;
+      const totalTransferKm = isRing ? (ringOuterKm + transferDistanceKm) : (hqStation.oreDropOffRange || transferDistanceKm);
+      const transferR = totalTransferKm * cam.zoom;
+      const dockKm = isRing ? (hqStation.dockingRadius || (ringOuterKm + 40.0)) : (hqStation.dockingRadius || 150.0);
+      const dockR = dockKm * cam.zoom;
+
       ctx.save();
       ctx.strokeStyle = 'rgba(56, 189, 248, 0.28)';
       ctx.lineWidth = 1.2;
@@ -951,8 +1033,7 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
       ctx.arc(hx, hy, dockR, 0, Math.PI * 2);
       ctx.stroke();
 
-      // HQ Ore Transfer Boundary Range (R_transfer = 250 km / ~120px)
-      const transferR = 250.0 * cam.zoom;
+      // HQ Ore Transfer Boundary Range (functions as a direct function of HQ size)
       ctx.strokeStyle = 'rgba(245, 158, 11, 0.38)';
       ctx.lineWidth = 1.4;
       ctx.setLineDash([4, 4]);
@@ -963,28 +1044,38 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
       ctx.fillStyle = 'rgba(245, 158, 11, 0.75)';
       ctx.font = '8px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('HQ ORE TRANSFER RANGE (250 km)', hx, hy - transferR - 6);
+      ctx.fillText(
+        isRing
+          ? `RING CITADEL ORE TRANSFER PERIMETER (+250 km OUTSIDE RING)`
+          : `HQ ORE TRANSFER RANGE (${Math.round(totalTransferKm)} km)`,
+        hx,
+        hy - transferR - 6
+      );
       ctx.restore();
     }
 
     // 3. Render Asteroids (Zero-Allocation Flat Buffer Viewport Culling & Tier Batching)
-    // In Galactic Deep-Zoom Tier (cam.zoom <= 0.0005), suppress fine asteroids to preserve 60 FPS
+    // In Galactic Deep-Zoom Tier (cam.zoom <= 0.0003), suppress fine asteroids to preserve 60 FPS
     const store = engine.asteroidSpatialStore;
-    if (cam.zoom > 0.0005 && store && store.count > 0) {
+    if (store && store.count === 0 && (engine.asteroids?.length ?? 0) > 0) {
+      store.init(engine.asteroids, engine.galaxyResult?.allClusters || engine.solarSystem?.clusters);
+    }
+
+    if (cam.zoom > 0.0003 && store && store.count > 0) {
       // Strict Camera Viewport Culling: evaluate AABB bounding box in world space
-      const margin = 120 / cam.zoom;
+      const margin = 160 / Math.max(0.001, cam.zoom);
       store.cullViewport(leftWorld, rightWorld, topWorld, bottomWorld, margin);
 
-      if (cam.zoom < 0.08) {
+      if (cam.zoom < 0.03) {
         // Macro-Scale Tactical Blip Optimization: Batch render circular blips by tier
         // SMALL tier blips
         if (store.visibleCountSmall > 0) {
           ctx.fillStyle = '#71717a';
           ctx.beginPath();
-          const r = 1.6;
           for (let i = 0; i < store.visibleCountSmall; i++) {
             const idx = store.visibleIndicesSmall[i];
             const [ax, ay] = worldToScreen(store.positions[idx * 2], store.positions[idx * 2 + 1], width, height);
+            const r = Math.max(1.8, (store.radii[idx] || 16) * cam.zoom);
             ctx.moveTo(ax + r, ay);
             ctx.arc(ax, ay, r, 0, Math.PI * 2);
           }
@@ -995,10 +1086,10 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
         if (store.visibleCountMedium > 0) {
           ctx.fillStyle = '#38bdf8';
           ctx.beginPath();
-          const r = 2.2;
           for (let i = 0; i < store.visibleCountMedium; i++) {
             const idx = store.visibleIndicesMedium[i];
             const [ax, ay] = worldToScreen(store.positions[idx * 2], store.positions[idx * 2 + 1], width, height);
+            const r = Math.max(2.4, (store.radii[idx] || 24) * cam.zoom);
             ctx.moveTo(ax + r, ay);
             ctx.arc(ax, ay, r, 0, Math.PI * 2);
           }
@@ -1009,10 +1100,10 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
         if (store.visibleCountLarge > 0) {
           ctx.fillStyle = '#fbbf24';
           ctx.beginPath();
-          const r = 3.0;
           for (let i = 0; i < store.visibleCountLarge; i++) {
             const idx = store.visibleIndicesLarge[i];
             const [ax, ay] = worldToScreen(store.positions[idx * 2], store.positions[idx * 2 + 1], width, height);
+            const r = Math.max(3.2, (store.radii[idx] || 35) * cam.zoom);
             ctx.moveTo(ax + r, ay);
             ctx.arc(ax, ay, r, 0, Math.PI * 2);
           }
@@ -1025,27 +1116,27 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
             tierName: 'SMALL' as const,
             indices: store.visibleIndicesSmall,
             count: store.visibleCountSmall,
-            bodyFill: '#18181b',
-            strokeColor: '#71717a',
-            craterFill: 'rgba(0,0,0,0.4)',
-            labelColor: '#a1a1aa',
+            bodyFill: '#1c1917',
+            strokeColor: '#78716c',
+            craterFill: 'rgba(0,0,0,0.45)',
+            labelColor: '#a8a29e',
           },
           {
             tierName: 'MEDIUM' as const,
             indices: store.visibleIndicesMedium,
             count: store.visibleCountMedium,
-            bodyFill: '#27272a',
+            bodyFill: '#0f172a',
             strokeColor: '#38bdf8',
-            craterFill: 'rgba(0,0,0,0.4)',
+            craterFill: 'rgba(56, 189, 248, 0.25)',
             labelColor: '#38bdf8',
           },
           {
             tierName: 'LARGE' as const,
             indices: store.visibleIndicesLarge,
             count: store.visibleCountLarge,
-            bodyFill: '#334155',
-            strokeColor: '#f59e0b',
-            craterFill: 'rgba(245, 158, 11, 0.45)',
+            bodyFill: '#1e1b4b',
+            strokeColor: '#fbbf24',
+            craterFill: 'rgba(251, 191, 36, 0.35)',
             labelColor: '#fbbf24',
           },
         ];
@@ -1056,13 +1147,15 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
           for (let bIdx = 0; bIdx < batch.count; bIdx++) {
             const idx = batch.indices[bIdx];
             const ast = store.getEntity(idx);
-            if (!ast || ast.oreRemaining <= 0) continue;
+            const oreRemaining = store.oreRemaining[idx];
+            if (oreRemaining <= 0) continue;
 
             const wx = store.positions[idx * 2];
             const wy = store.positions[idx * 2 + 1];
             const [ax, ay] = worldToScreen(wx, wy, width, height);
-            const rot = store.rotations[idx] || ast.rotation || 0;
-            const rad = (store.radii[idx] || ast.radius || 16) * cam.zoom;
+            const rot = store.rotations[idx] || ast?.rotation || 0;
+            const baseRad = store.radii[idx] || ast?.radius || 16;
+            const rad = Math.max(2.5, baseRad * cam.zoom);
 
             ctx.save();
             ctx.translate(ax, ay);
@@ -1070,18 +1163,34 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
 
             ctx.fillStyle = batch.bodyFill;
             ctx.strokeStyle = batch.strokeColor;
-            ctx.lineWidth = 1.6;
+            ctx.lineWidth = Math.max(1.0, 1.5 * Math.min(1.5, cam.zoom * 4));
 
-            const facets = ast.facets ?? ast.vertices ?? [];
+            const facets = ast?.facets ?? ast?.vertices ?? [];
             if (facets.length > 0) {
               ctx.beginPath();
-              for (let i = 0; i < facets.length; i++) {
-                const pt = facets[i];
+              for (let fIdx = 0; fIdx < facets.length; fIdx++) {
+                const pt = facets[fIdx];
                 if (!pt) continue;
                 const fx = pt.x * cam.zoom;
                 const fy = pt.y * cam.zoom;
-                if (i === 0) ctx.moveTo(fx, fy);
+                if (fIdx === 0) ctx.moveTo(fx, fy);
                 else ctx.lineTo(fx, fy);
+              }
+              ctx.closePath();
+              ctx.fill();
+              ctx.stroke();
+            } else {
+              // Procedural polygonal faceted rock geometry fallback
+              const vCount = baseRad < 80 ? 8 : baseRad < 180 ? 10 : 13;
+              const hash = idx * 37 + 101;
+              ctx.beginPath();
+              for (let vi = 0; vi < vCount; vi++) {
+                const angle = (vi / vCount) * Math.PI * 2;
+                const rFactor = 0.76 + (Math.sin(hash + vi * 2.1) * 0.5 + 0.5) * 0.44;
+                const rx = Math.cos(angle) * rad * rFactor;
+                const ry = Math.sin(angle) * rad * rFactor;
+                if (vi === 0) ctx.moveTo(rx, ry);
+                else ctx.lineTo(rx, ry);
               }
               ctx.closePath();
               ctx.fill();
@@ -1089,30 +1198,29 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
             }
 
             // Craters / ore veins
-            const craters = ast.craters ?? [];
+            const craters = ast?.craters ?? [];
             if (craters.length > 0) {
               ctx.fillStyle = batch.craterFill;
               for (let cIdx = 0; cIdx < craters.length; cIdx++) {
                 const c = craters[cIdx];
                 if (!c) continue;
                 ctx.beginPath();
-                ctx.arc(c.x * cam.zoom, c.y * cam.zoom, (c.r || 3) * cam.zoom, 0, Math.PI * 2);
+                ctx.arc(c.x * cam.zoom, c.y * cam.zoom, Math.max(1.0, (c.r || 3) * cam.zoom), 0, Math.PI * 2);
                 ctx.fill();
               }
             }
 
             ctx.restore();
 
-            // Ore Node HUD Tag
-            if (cam.zoom >= 0.04) {
+            // Ore Node HUD Tag: Only show for LARGE nodes, or when zoomed in close (cam.zoom >= 0.08) to prevent label clumping
+            if ((batch.tierName === 'LARGE' && cam.zoom >= 0.04) || cam.zoom >= 0.08) {
               ctx.save();
               ctx.font = 'bold 8px monospace';
               ctx.textAlign = 'center';
-              const remaining = store.oreRemaining[idx];
-              const capacity = store.oreCapacity[idx] || 1;
-              const pct = Math.round((remaining / capacity) * 100);
+              const capacity = store.oreCapacity[idx] || (ast as any)?.maxOre || (ast as any)?.oreCapacity || 1;
+              const pct = Math.round((oreRemaining / capacity) * 100);
               ctx.fillStyle = batch.labelColor;
-              ctx.fillText(`${batch.tierName} NODE [${remaining} ORE - ${pct}%]`, ax, ay + rad + 13);
+              ctx.fillText(`${batch.tierName} NODE [${oreRemaining} ORE - ${pct}%]`, ax, ay + rad + 11);
               ctx.restore();
             }
           }
@@ -1223,6 +1331,108 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
     }
     ctx.restore();
 
+    // 3.6. OVERLAY PASS: CELESTIAL & ASTEROID CLUSTER GRAVITY WELLS (Always Visible Over Fog of War)
+    ctx.save();
+    // A. Asteroid Cluster Gravity Wells (+10% margin capture zone)
+    const allClustersToRender: any[] = [];
+    if (engine.systems && engine.systems.length > 0) {
+      for (const sys of engine.systems) {
+        if (sys.clusters) allClustersToRender.push(...sys.clusters);
+        else if (sys.solarSystem?.clusters) allClustersToRender.push(...sys.solarSystem.clusters);
+      }
+    } else if (engine.solarSystem?.clusters) {
+      allClustersToRender.push(...engine.solarSystem.clusters);
+    } else if (engine.galaxyResult?.allClusters) {
+      allClustersToRender.push(...engine.galaxyResult.allClusters);
+    }
+
+    for (const cluster of allClustersToRender) {
+      const [cx, cy] = worldToScreen(cluster.center.x, cluster.center.y, width, height);
+      const clusterRadius = cluster.radius || cluster.envelopeRadius || 2200;
+      const wellWorldR = cluster.gravityWellRadius || cluster.wellRadius || Math.round(clusterRadius * 1.10);
+      const screenWellR = wellWorldR * cam.zoom;
+
+      if (cx < -screenWellR - 40 || cx > width + screenWellR + 40 || cy < -screenWellR - 40 || cy > height + screenWellR + 40) {
+        continue;
+      }
+
+      // 1. Dashed Cyan Halo Ring
+      ctx.strokeStyle = 'rgba(0, 240, 255, 0.55)';
+      ctx.lineWidth = 1.3;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.arc(cx, cy, screenWellR, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // 2. Subtle Radial Capture Glow
+      if (screenWellR > 18) {
+        const innerGlowR = Math.max(0, screenWellR * 0.75);
+        if (Number.isFinite(cx) && Number.isFinite(cy) && Number.isFinite(innerGlowR) && Number.isFinite(screenWellR)) {
+          const wellGrad = ctx.createRadialGradient(cx, cy, innerGlowR, cx, cy, screenWellR);
+          wellGrad.addColorStop(0, 'rgba(0, 240, 255, 0.05)');
+          wellGrad.addColorStop(1, 'rgba(0, 240, 255, 0.00)');
+          ctx.fillStyle = wellGrad;
+          ctx.beginPath();
+          ctx.arc(cx, cy, screenWellR, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+
+      // 3. Monospace Tactical Beacon Tag
+      if (screenWellR > 14) {
+        ctx.fillStyle = 'rgba(0, 240, 255, 0.85)';
+        ctx.font = 'bold 8.5px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(
+          `${(cluster.name || 'ASTEROID CLUSTER').toUpperCase()} GRAVITY WELL [MOORABLE]`,
+          cx,
+          cy - screenWellR - 5
+        );
+      }
+    }
+
+    // B. Planetary Gravity Wells (Visible Over Fog of War)
+    for (const sys of systemsToRender) {
+      const planetsToScan = sys.planets && sys.planets.length > 0
+        ? sys.planets
+        : [
+            ...(sys.solarSystem?.rockyPlanets || []),
+            ...(sys.solarSystem?.gasGiants || []),
+          ];
+
+      for (const p of planetsToScan) {
+        const [px, py] = worldToScreen(p.pos.x, p.pos.y, width, height);
+        const pWellWorldR = p.wellRadius || (typeof (p as any).gravityRating === 'number' ? (p.radius || 3000) + 2500 * (p as any).gravityRating : (p.radius || 3000) + 2500);
+        const pScreenWellR = pWellWorldR * cam.zoom;
+
+        if (px < -pScreenWellR - 40 || px > width + pScreenWellR + 40 || py < -pScreenWellR - 40 || py > height + pScreenWellR + 40) {
+          continue;
+        }
+
+        if (pScreenWellR > 8) {
+          ctx.strokeStyle = 'rgba(6, 182, 212, 0.45)';
+          ctx.lineWidth = 1.0;
+          ctx.setLineDash([5, 5]);
+          ctx.beginPath();
+          ctx.arc(px, py, pScreenWellR, 0, Math.PI * 2);
+          ctx.stroke();
+
+          if (cam.zoom >= 0.01 && pScreenWellR > 20) {
+            ctx.fillStyle = 'rgba(6, 182, 212, 0.75)';
+            ctx.font = 'bold 8px monospace';
+            ctx.textAlign = 'center';
+            const gRat = (p as any).gravityRating !== undefined ? `${(p as any).gravityRating.toFixed(2)}G` : '1.00G';
+            ctx.fillText(
+              `${p.name.toUpperCase()} GRAVITY WELL [${gRat}]`,
+              px,
+              py - pScreenWellR - 5
+            );
+          }
+        }
+      }
+    }
+    ctx.restore();
+
     // 4. Ships & Vector Meshes
     const friendlies = (engine.ships ?? []).filter((s) => s && s.faction === 'FRIENDLY' && s.hullState !== 'DESTROYED');
     const missileLockRange = BASE_TACTICAL_RANGES.missileLockRangeKm * (engine.combatModifiers?.missileRangeMult ?? 1.0);
@@ -1239,11 +1449,15 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
     } else {
     for (const ship of engine.ships) {
       if (!ship) continue;
+      if (ship.faction === 'HOSTILE' && (!ship.visibilityTier || ship.visibilityTier === 'NONE' || ship.visibilityState === 'HIDDEN')) {
+        continue;
+      }
       if (ship.visibilityTier === 'NONE') continue;
       const [sx, sy] = worldToScreen(ship.pos.x, ship.pos.y, width, height);
       const hullSpec = getShipHullSpec(ship);
       const baseRadius = ship.radius ?? hullSpec.baseRadius;
-      const r = baseRadius * cam.zoom;
+      const visualScale = getShipVisualScaleMultiplier(ship);
+      const r = baseRadius * cam.zoom * visualScale;
       const angle = ship.heading;
 
       // Two-Tier Tactical Fog-of-War & Sensor Visibility Architecture
@@ -1331,6 +1545,61 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
         ctx.beginPath();
         ctx.arc(destX, destY, 4, 0, Math.PI * 2);
         ctx.fill();
+        ctx.restore();
+      }
+
+      // Shipyard & HQ Tactical Rally Point Vector & Beacon Flag
+      if (
+        ship.rallyPoint &&
+        ship.faction === 'FRIENDLY' &&
+        (selectedShipId === ship.id ||
+          ship.role === 'HQ' ||
+          ship.role === 'SY_LIGHT' ||
+          ship.role === 'SY_MEDIUM' ||
+          ship.role === 'SY_HEAVY')
+      ) {
+        ctx.save();
+        const [rX, rY] = worldToScreen(ship.rallyPoint.x, ship.rallyPoint.y, width, height);
+        const [px, py] = worldToScreen(ship.pos.x, ship.pos.y, width, height);
+        const nowMs = Date.now();
+
+        // Animated dashed beacon vector line
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 4]);
+        ctx.lineDashOffset = -nowMs * 0.02;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(rX, rY);
+        ctx.stroke();
+
+        // Pulsing rally point beacon ring
+        const pulse = 0.8 + 0.3 * Math.sin(nowMs * 0.006);
+        ctx.fillStyle = 'rgba(245, 158, 11, 0.2)';
+        ctx.beginPath();
+        ctx.arc(rX, rY, 12 * pulse, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 1.8;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(rX, rY, 5, 0, Math.PI * 2);
+        ctx.stroke();
+
+        // Tactical Rally Flag
+        ctx.fillStyle = '#f59e0b';
+        ctx.beginPath();
+        ctx.moveTo(rX, rY - 4);
+        ctx.lineTo(rX, rY - 14);
+        ctx.lineTo(rX + 8, rY - 9);
+        ctx.closePath();
+        ctx.fill();
+
+        // Tag label
+        ctx.fillStyle = '#fbbf24';
+        ctx.font = 'bold 9px monospace';
+        ctx.fillText(`🚩 RALLY: ${ship.name.toUpperCase()}`, rX + 6, rY + 12);
         ctx.restore();
       }
 
@@ -1427,7 +1696,13 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
         ctx.restore();
       }
 
+      // For Garn Ring HQ moored to a planet, the equatorial megastructure renders in celestial pass.
+      // Standalone Garn Ring or System Overview contact retains tactical presence.
+      const isGarnRingEntity = Boolean(ship.isGarnRing || ship.hqType === 'GARN_RING_CITADEL');
+      const isMooredRing = Boolean(isGarnRingEntity && ship.isMoored && cam.zoom > 0.0015);
+
       // Procedural Vector Ship Renderers or Macro Tactical Contact Reticles
+      if (!isMooredRing) {
       if (cam.zoom <= 0.0015) {
         // TIER 2: SYSTEM OVERVIEW TIER (0.0005 < Z <= 0.0015)
         // High-contrast ship contact chevron with role callout
@@ -1435,7 +1710,8 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
         ctx.save();
         ctx.translate(sx, sy);
         ctx.rotate(angle);
-        const factionColor = ship.faction === 'FRIENDLY' ? '#38bdf8' : '#ef4444';
+        const facPalette = getShipFactionPalette(ship);
+        const factionColor = facPalette.primary;
         ctx.strokeStyle = factionColor;
         ctx.fillStyle = ship.faction === 'FRIENDLY' ? 'rgba(56, 189, 248, 0.45)' : 'rgba(239, 68, 68, 0.45)';
         ctx.lineWidth = 1.6;
@@ -1460,12 +1736,13 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
           ship.role === 'DESTROYER' ? 'DST' : 'FRG';
         ctx.fillText(roleCode, 0, -arrowSize - 3);
         ctx.restore();
-      } else if (cam.zoom < 0.25) {
+      } else if (cam.zoom < (visualScale > 1.0 ? 0.085 : 0.25)) {
         const iconSize = Math.max(7, Math.round(11 * (cam.zoom / 0.25)));
         ctx.save();
         ctx.translate(sx, sy);
         ctx.rotate(angle);
-        const factionColor = ship.faction === 'FRIENDLY' ? '#38bdf8' : '#ef4444';
+        const facPalette = getShipFactionPalette(ship);
+        const factionColor = facPalette.primary;
         ctx.strokeStyle = factionColor;
         ctx.lineWidth = 1.6;
         ctx.fillStyle = ship.faction === 'FRIENDLY' ? 'rgba(56, 189, 248, 0.35)' : 'rgba(239, 68, 68, 0.35)';
@@ -1554,6 +1831,7 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
           ctx.restore();
         }
       }
+      } // End of if (!isMooredRing)
 
       // Multi-Ship & Single-Ship Selection Reticle System
       const isSelected = selectedShipIds.length > 0
@@ -1608,8 +1886,9 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
             ctx.textAlign = 'center';
             ctx.fillText('[FLAGSHIP]', sx, sy - bSize - 4);
           } else {
-            // Escort Ship: Cyan Corner Brackets
-            ctx.strokeStyle = '#38bdf8';
+            // Escort Ship: Corner Brackets
+            const facPalette = getShipFactionPalette(ship);
+            ctx.strokeStyle = facPalette.accent || '#38bdf8';
             ctx.lineWidth = 1.4;
             const bSize = reticleRadius + 2;
             const cLen = 5;
@@ -1636,14 +1915,14 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
 
             // Escort HUD Label
             ctx.font = '7.5px monospace';
-            ctx.fillStyle = '#38bdf8';
+            ctx.fillStyle = facPalette.accent || '#38bdf8';
             ctx.textAlign = 'center';
             ctx.fillText('[ESCORT]', sx, sy - bSize - 3);
 
             // Tether line connecting Escort to Flagship
             if (designatedFlagship && designatedFlagship.id !== ship.id) {
               const [fx, fy] = worldToScreen(designatedFlagship.pos.x, designatedFlagship.pos.y, width, height);
-              ctx.strokeStyle = 'rgba(56, 189, 248, 0.18)';
+              ctx.strokeStyle = facPalette.accent ? `${facPalette.accent}33` : 'rgba(56, 189, 248, 0.18)';
               ctx.lineWidth = 1.0;
               ctx.setLineDash([4, 6]);
               ctx.beginPath();
@@ -1654,29 +1933,63 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
           }
         } else {
           // Standard Single-Ship Selection Ring
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 1.5;
+          const isGarnRingHq = Boolean(ship.isGarnRing || (ship.role === 'HQ' && (ship.factionId === 'GARN' || ship.hqType === 'GARN_RING_CITADEL')));
+          const facPalette = getShipFactionPalette(ship);
+          ctx.strokeStyle = isGarnRingHq ? '#22c55e' : (facPalette.primary || '#ffffff');
+          ctx.lineWidth = isGarnRingHq ? 2.5 : 1.5;
+          if (isGarnRingHq) {
+            ctx.setLineDash([12, 6]);
+          }
           ctx.beginPath();
-          ctx.arc(sx, sy, reticleRadius, 0, Math.PI * 2);
+          const targetR = isGarnRingHq
+            ? ((ship.ringOuterRadius || ship.radius || 1100) + 12.0) * cam.zoom
+            : reticleRadius;
+          ctx.arc(sx, sy, targetR, 0, Math.PI * 2);
           ctx.stroke();
+          ctx.setLineDash([]);
+
+          if (isGarnRingHq) {
+            // 4 Cardinal Tactical Brackets (N, S, E, W) aligned with the ring citadel perimeter
+            const bL = Math.max(12, 28 * cam.zoom);
+            ctx.strokeStyle = '#4ade80';
+            ctx.lineWidth = 2.5;
+            // North
+            ctx.beginPath(); ctx.moveTo(sx - bL, sy - targetR); ctx.lineTo(sx + bL, sy - targetR); ctx.stroke();
+            // South
+            ctx.beginPath(); ctx.moveTo(sx - bL, sy + targetR); ctx.lineTo(sx + bL, sy + targetR); ctx.stroke();
+            // East
+            ctx.beginPath(); ctx.moveTo(sx + targetR, sy - bL); ctx.lineTo(sx + targetR, sy + bL); ctx.stroke();
+            // West
+            ctx.beginPath(); ctx.moveTo(sx - targetR, sy - bL); ctx.lineTo(sx - targetR, sy + bL); ctx.stroke();
+
+            // Label
+            ctx.font = `bold ${Math.max(8, Math.round(11 * cam.zoom))}px monospace`;
+            ctx.fillStyle = '#4ade80';
+            ctx.textAlign = 'center';
+            ctx.fillText('[GARN RING CITADEL HQ]', sx, sy - targetR - 10);
+          }
         }
         ctx.restore();
       }
 
       // Fleet Defensive Umbrella Perimeter (PDPLA Range Circle)
-      // When in Defensive Stance or Selected, visualize the 65km Point-Defense Umbrella envelope
+      // When in Defensive Stance or Selected, visualize point-defense umbrella envelope
       if (ship.combatStance === 'DEFENSIVE' || isSelected) {
         ctx.save();
-        const pdScreenRadius = ship.pdplaRange * cam.zoom;
+        const isRing = Boolean(ship.isRingStructure || ship.hqType === 'GARN_RING_CITADEL' || ship.isGarnRing);
+        const ringOuterKm = isRing ? (ship.ringOuterRadius || ship.radius || 1100) : 0;
+        const pdRangeKm = ship.pdplaRange || 65.0;
+        const totalPDRadiusKm = isRing ? (ringOuterKm + pdRangeKm) : pdRangeKm;
+        const pdScreenRadius = totalPDRadiusKm * cam.zoom;
         const isDefensive = ship.combatStance === 'DEFENSIVE';
         const isOverheated = ship.pdplaOverheated;
 
         ctx.strokeStyle = isOverheated
           ? 'rgba(239, 68, 68, 0.25)'
           : isDefensive
-          ? 'rgba(56, 189, 248, 0.28)'
-          : 'rgba(56, 189, 248, 0.14)';
-        ctx.lineWidth = isDefensive ? 1.2 : 0.8;
+          ? (isRing ? 'rgba(74, 222, 128, 0.38)' : 'rgba(56, 189, 248, 0.28)')
+          : (isRing ? 'rgba(74, 222, 128, 0.20)' : 'rgba(56, 189, 248, 0.14)');
+        ctx.lineWidth = isDefensive ? 1.4 : 0.9;
         ctx.setLineDash([4, 6]);
         ctx.beginPath();
         ctx.arc(sx, sy, pdScreenRadius, 0, Math.PI * 2);
@@ -1684,10 +1997,12 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
 
         if (ship.id === selectedShipId && pdScreenRadius > 30) {
           ctx.font = '8px monospace';
-          ctx.fillStyle = isOverheated ? 'rgba(239, 68, 68, 0.7)' : 'rgba(56, 189, 248, 0.7)';
+          ctx.fillStyle = isOverheated ? 'rgba(239, 68, 68, 0.7)' : (isRing ? 'rgba(74, 222, 128, 0.85)' : 'rgba(56, 189, 248, 0.7)');
           ctx.fillText(
             isOverheated
               ? `[PD OVERHEATED: ${ship.pdplaOverheatTimer?.toFixed(1)}s]`
+              : isRing
+              ? `[RING CITADEL DEFENSIVE UMBRELLA: +${Math.round(pdRangeKm)}km OUTSIDE RING]`
               : isDefensive
               ? `[FLEET DEFENSIVE UMBRELLA: ${Math.round(ship.pdplaRange)}km]`
               : `[PD RANGE: ${Math.round(ship.pdplaRange)}km]`,
@@ -1701,12 +2016,67 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
       // Thermal Deflector Shield Ring
       if (!ship.shieldOverheated && ship.shieldHp > 0) {
         ctx.save();
-        const sRadius = Math.max(r * 1.9, 12);
+        const isRing = Boolean(ship.isRingStructure || ship.hqType === 'GARN_RING_CITADEL' || ship.isGarnRing);
+        const sRadius = isRing
+          ? ((ship.ringOuterRadius || ship.radius || 1100) + 8) * cam.zoom
+          : Math.max(r * 1.9, 12);
         const shieldAlpha = 0.25 + 0.45 * (ship.shieldHp / ship.shieldHpMax);
-        ctx.strokeStyle = `rgba(100, 200, 255, ${shieldAlpha})`;
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = isRing ? `rgba(74, 222, 128, ${shieldAlpha})` : `rgba(100, 200, 255, ${shieldAlpha})`;
+        ctx.lineWidth = isRing ? 2.5 : 2;
         ctx.beginPath();
         ctx.arc(sx, sy, sRadius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // NOVAN VISUAL FX 1: Cold Shield Reboot Venting Ring
+      // During REBOOTING: Draw a flickering amber thermal venting ring around the ship hull
+      if (ship.shieldCycleState === 'REBOOTING') {
+        ctx.save();
+        const ventRadius = Math.max(r * 2.1, 14);
+        const flicker = 0.8 + Math.random() * 0.4;
+        ctx.strokeStyle = 'rgba(251, 146, 60, 0.65)';
+        ctx.lineWidth = 2 * flicker;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath();
+        ctx.arc(sx, sy, ventRadius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // NOVAN VISUAL FX 2: Expanding Cyan Hexagonal Barrier Pulse
+      // During Hardening (first 1.0s after return): Render an expanding cyan hexagonal barrier pulse
+      if ((ship.shieldHardeningTimer ?? 0) > 0) {
+        ctx.save();
+        const progress = 1 - (ship.shieldHardeningTimer ?? 0) / 30; // 0.0 -> 1.0
+        const pulseRadius = Math.max(r * 1.9, 13) + progress * 18;
+        ctx.strokeStyle = 'rgba(0, 240, 255, 0.8)';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        for (let hi = 0; hi < 6; hi++) {
+          const angle = (Math.PI / 3) * hi + (progress * 0.3);
+          const hx = sx + Math.cos(angle) * pulseRadius;
+          const hy = sy + Math.sin(angle) * pulseRadius;
+          if (hi === 0) ctx.moveTo(hx, hy);
+          else ctx.lineTo(hx, hy);
+        }
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // NOVAN VISUAL FX 3: Micro-Jump Spooling Aura
+      if (ship.microJumpState === 'SPOOLING') {
+        ctx.save();
+        const spoolRemaining = ship.microJumpSpoolRemaining ?? 105;
+        const spoolProgress = 1 - Math.max(0, spoolRemaining) / 105;
+        const auraRadius = Math.max(r * 1.6, 10) + spoolProgress * 8;
+        ctx.strokeStyle = `rgba(56, 189, 248, ${0.4 + spoolProgress * 0.5})`;
+        ctx.lineWidth = 1.5 + spoolProgress * 2;
+        ctx.shadowColor = '#00f0ff';
+        ctx.shadowBlur = 10 * spoolProgress;
+        ctx.beginPath();
+        ctx.arc(sx, sy, auraRadius, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
       }
@@ -1714,13 +2084,22 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
       // PDPLA Phased Array Laser Beam
       if (ship.pdplaActiveBeamTarget) {
         const [bx, by] = worldToScreen(ship.pdplaActiveBeamTarget.x, ship.pdplaActiveBeamTarget.y, width, height);
+        const isRing = Boolean(ship.isRingStructure || ship.hqType === 'GARN_RING_CITADEL' || ship.isGarnRing);
+        let startX = sx;
+        let startY = sy;
+        if (isRing) {
+          const ringScreenR = (ship.ringOuterRadius || ship.radius || 1100) * cam.zoom;
+          const beamAng = Math.atan2(by - sy, bx - sx);
+          startX = sx + Math.cos(beamAng) * ringScreenR;
+          startY = sy + Math.sin(beamAng) * ringScreenR;
+        }
         ctx.save();
-        ctx.strokeStyle = '#78dcff';
-        ctx.lineWidth = 2;
-        ctx.shadowColor = '#78dcff';
+        ctx.strokeStyle = isRing ? '#4ade80' : '#78dcff';
+        ctx.lineWidth = 2.2;
+        ctx.shadowColor = isRing ? '#4ade80' : '#78dcff';
         ctx.shadowBlur = 8;
         ctx.beginPath();
-        ctx.moveTo(sx, sy);
+        ctx.moveTo(startX, startY);
         ctx.lineTo(bx, by);
         ctx.stroke();
         ctx.restore();
@@ -1957,9 +2336,10 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
       }
 
       // Floating Mini Status Bars
+      const isGarnRingHq = Boolean(ship.isGarnRing || (ship.role === 'HQ' && ship.factionId === 'GARN'));
       const barW = 44;
       const barX = sx - barW / 2;
-      const barY = sy - r * 2.2;
+      const barY = isGarnRingHq ? (sy - (ship.radius || 1100) * cam.zoom - 16) : (sy - r * 2.2);
 
       ctx.fillStyle = '#1e1e1e';
       ctx.fillRect(barX, barY, barW, 4);
@@ -1969,9 +2349,21 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
         ctx.fillStyle = '#b4c3d2';
         ctx.fillRect(barX, barY, barW * hRatio, 4);
       } else if (ship.hullState === 'CRIPPLED') {
-        const cRatio = Math.max(Math.min(ship.crippleBar / ship.crippleBarMax, 1), 0);
-        ctx.fillStyle = '#ff3232';
-        ctx.fillRect(barX, barY, barW * cRatio, 4);
+        const crippleRatio = Math.max(Math.min(ship.hullHp / (0.25 * ship.hullMax), 1), 0);
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillRect(barX, barY, barW * crippleRatio, 4);
+      } else if (ship.hullState === 'DISABLED') {
+        const disabledRatio = Math.max(Math.min(ship.hullHp / (0.125 * ship.hullMax), 1), 0);
+        const isBlink = Math.floor(Date.now() / 200) % 2 === 0;
+        ctx.fillStyle = isBlink ? '#ef4444' : '#991b1b';
+        ctx.fillRect(barX, barY, barW * disabledRatio, 4);
+      }
+
+      // Permanent Frame Damage Ceiling Marker Line
+      if ((ship.maxRepairableHull ?? ship.hullMax) < ship.hullMax) {
+        const capRatio = Math.max(0, Math.min(1.0, (ship.maxRepairableHull ?? ship.hullMax) / ship.hullMax));
+        ctx.fillStyle = '#ef4444';
+        ctx.fillRect(barX + barW * capRatio - 1, barY - 1, 2, 6);
       }
 
       // Radiator Heat Bar
@@ -2036,17 +2428,17 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
         ctx.restore();
       }
 
-      // Mini Name Tag
+      // Mini Name Tag & Faction Badge
+      const facPalette = getShipFactionPalette(ship);
       const labelColor =
         ship.hullState === 'CRIPPLED'
           ? '#ff4444'
-          : ship.faction === 'FRIENDLY'
-          ? '#38bdf8'
-          : '#f43f5e';
+          : facPalette.primary;
       ctx.fillStyle = labelColor;
       ctx.font = '10px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText(`${ship.name}`, sx, barY - 4);
+      const tagPrefix = ship.factionId && FACTION_REGISTRY[ship.factionId] ? `[${FACTION_REGISTRY[ship.factionId].tag}] ` : '';
+      ctx.fillText(`${tagPrefix}${ship.name}`, sx, barY - 4);
 
       // Combat Stance & Role Tactical Indicator Tag
       {
@@ -2068,7 +2460,7 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
           const stanceMode = ship.minerStance !== 'CARELESS' ? 'TIMID' : 'CARELESS';
           const clampedTag = (ship as any).minerClamped ? ' • TETHERED' : '';
           const retreatTag = (ship as any).minerRetreating ? ' • EVADING' : '';
-          extra = ` MINER ${Math.round(ship.cargoOre || 0)}/1K [${ship.minerState?.replace('STATE_', '') || 'IDLE'} | ${stanceMode}${clampedTag}${retreatTag}]`;
+          extra = ` MINER ${Math.round(ship.cargoOre || 0)}/1K [${String(ship.minerState || 'IDLE').replace('STATE_', '')} | ${stanceMode}${clampedTag}${retreatTag}]`;
         } else if (ship.role === 'HQ') {
           extra = ' HQ CITADEL';
         } else if (ship.role === 'BASTION' || ship.isPirateBastion) {
@@ -2230,8 +2622,146 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
 
         ctx.restore();
       }
+
+      // Salvage Barge Magnetic Tractor Recovery Beam
+      if (
+        (ship.role === 'SCRAP' || (ship.class as string) === 'SALVAGER') &&
+        ship.salvageState === 'COLLECTING' &&
+        ship.salvageTargetId &&
+        ship.hullState !== 'DESTROYED'
+      ) {
+        const targetScrap = engine.scraps?.find((sc) => sc.id === ship.salvageTargetId);
+        if (targetScrap) {
+          const [sx, sy] = worldToScreen(ship.pos.x, ship.pos.y, width, height);
+          const [tx, ty] = worldToScreen(targetScrap.pos.x, targetScrap.pos.y, width, height);
+
+          ctx.save();
+          const pulse = (Date.now() * 0.006) % 1;
+
+          // Tractor Beam Capture Cone
+          const angle = Math.atan2(ty - sy, tx - sx);
+          const perpAngle = angle + Math.PI / 2;
+          const coneSpread = 16 * cam.zoom;
+
+          ctx.fillStyle = 'rgba(16, 185, 129, 0.15)';
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.lineTo(tx + Math.cos(perpAngle) * coneSpread, ty + Math.sin(perpAngle) * coneSpread);
+          ctx.lineTo(tx - Math.cos(perpAngle) * coneSpread, ty - Math.sin(perpAngle) * coneSpread);
+          ctx.closePath();
+          ctx.fill();
+
+          // High-Energy Tractor Stream Core
+          ctx.strokeStyle = '#34d399';
+          ctx.lineWidth = 2.2 * cam.zoom;
+          ctx.shadowColor = '#10b981';
+          ctx.shadowBlur = 10;
+          ctx.beginPath();
+          ctx.moveTo(sx, sy);
+          ctx.lineTo(tx, ty);
+          ctx.stroke();
+
+          // Magnetic Flux Vortex Rings
+          for (let rIdx = 0; rIdx < 3; rIdx++) {
+            const t = (pulse + rIdx * 0.33) % 1.0;
+            const rx = tx + (sx - tx) * t;
+            const ry = ty + (sy - ty) * t;
+            const ringR = (8 - t * 4) * cam.zoom;
+
+            ctx.strokeStyle = '#6ee7b7';
+            ctx.lineWidth = 1.2 * cam.zoom;
+            ctx.beginPath();
+            ctx.arc(rx, ry, Math.max(1, ringR), 0, Math.PI * 2);
+            ctx.stroke();
+          }
+
+          ctx.restore();
+        }
+      }
     }
     } // End of if (cam.zoom > 0.0015) transfer beam
+
+    // Battlefield Scrap Entities Render Pass
+    if (Array.isArray(engine.scraps) && engine.scraps.length > 0 && cam.zoom > 0.0004) {
+      ctx.save();
+      const now = Date.now();
+
+      for (let sIdx = 0; sIdx < engine.scraps.length; sIdx++) {
+        const scrap = engine.scraps[sIdx];
+        const [sx, sy] = worldToScreen(scrap.pos.x, scrap.pos.y, width, height);
+
+        // Viewport frustum culling
+        if (sx < -60 || sx > width + 60 || sy < -60 || sy > height + 60) continue;
+
+        const scrapUnits = scrap.units || (scrap.size === 'HEAVY' ? 3 : scrap.size === 'MEDIUM' ? 2 : 1);
+        const baseR = scrapUnits === 3 ? 14 : scrapUnits === 2 ? 10 : 6.5;
+        const r = Math.max(3, baseR * cam.zoom * 2.2);
+
+        const currentRot = scrap.heading + (now * 0.0008 * (scrap.rotationSpeed || 0.2));
+
+        ctx.save();
+        ctx.translate(sx, sy);
+        ctx.rotate(currentRot);
+
+        // Debris geometry based on size
+        const colorPrimary = scrapUnits === 3 ? '#f97316' : scrapUnits === 2 ? '#38bdf8' : '#cbd5e1';
+        const colorGlow = scrapUnits === 3 ? '#ea580c' : scrapUnits === 2 ? '#0284c7' : '#94a3b8';
+
+        ctx.fillStyle = colorPrimary;
+        ctx.strokeStyle = colorGlow;
+        ctx.lineWidth = Math.max(0.8, 1.2 * cam.zoom);
+        ctx.shadowColor = colorGlow;
+        ctx.shadowBlur = Math.max(2, 4 * cam.zoom);
+
+        ctx.beginPath();
+        if (scrapUnits === 3) {
+          // Heavy Hull Section (Hexagonal broken superstructure)
+          ctx.moveTo(-r * 1.2, -r * 0.5);
+          ctx.lineTo(-r * 0.4, -r * 1.1);
+          ctx.lineTo(r * 0.9, -r * 0.7);
+          ctx.lineTo(r * 1.3, r * 0.4);
+          ctx.lineTo(r * 0.2, r * 1.2);
+          ctx.lineTo(-r * 1.0, r * 0.8);
+        } else if (scrapUnits === 2) {
+          // Medium Armor Plate (Bent quadrilateral)
+          ctx.moveTo(-r * 1.0, -r * 0.7);
+          ctx.lineTo(r * 0.8, -r * 0.9);
+          ctx.lineTo(r * 1.1, r * 0.6);
+          ctx.lineTo(-r * 0.6, r * 1.0);
+        } else {
+          // Light Shard (Triangular fragment)
+          ctx.moveTo(-r * 0.9, -r * 0.7);
+          ctx.lineTo(r * 1.0, -r * 0.2);
+          ctx.lineTo(-r * 0.3, r * 0.9);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Metallic Conduit Glint
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(-r * 0.3, -r * 0.2);
+        ctx.lineTo(r * 0.4, r * 0.2);
+        ctx.stroke();
+
+        ctx.restore();
+
+        // Scrap Info Tag
+        if (cam.zoom > 0.0018) {
+          ctx.font = 'bold 8px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = colorPrimary;
+          ctx.shadowBlur = 0;
+          ctx.fillText(`[${scrap.size} SCRAP • ${scrapUnits}U]`, sx, sy - r - 4);
+          ctx.font = '7px monospace';
+          ctx.fillStyle = '#94a3b8';
+          ctx.fillText(`+${scrap.metallic}M • +${scrap.organic}O`, sx, sy + r + 9);
+        }
+      }
+      ctx.restore();
+    }
 
     // 5. STRUCT OF ARRAYS (SOA) BATCHED ORDNANCE RENDER PASS
     // Zero-allocation batched draw calls for 10,000+ active missiles & CMs
@@ -2260,7 +2790,7 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
 
         // --- 1. COSMETIC SINE-WAVE JINKING PARAMETERS ---
         // Extract numeric missile ID for static phase offset: phi = (missile.id * 137.5) % Math.PI
-        const numId = parseInt(m.id.replace(/\D/g, '') || '1', 10);
+        const numId = parseInt(String(m.id || '1').replace(/\D/g, '') || '1', 10);
         const phi = (numId * 137.5) % Math.PI;
 
         // Angular frequency: rapid weave (omega = 0.25 rad/tick)
@@ -2738,7 +3268,7 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
             ctx.font = 'bold 10px monospace';
             ctx.textAlign = 'center';
             ctx.fillText(
-              `[${well.name.toUpperCase()} ${well.type.replace('_', ' ')} WELL: ${Math.round(well.wellRadius)}km ${
+              `[${String(well.name || '').toUpperCase()} ${String(well.type || '').replace('_', ' ')} WELL: ${Math.round(well.wellRadius || 0)}km ${
                 well.isAlliedOrCaptured ? 'ALLIED/CAPTURED' : 'CONTESTED'
               }]`,
               px,
@@ -3098,7 +3628,19 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
           return;
         }
         if (ship && ship.faction === 'FRIENDLY') {
-          engine.setSplineOrder(ship.id, worldMouse);
+          const isFacility =
+            ship.role === 'HQ' ||
+            ship.role === 'SY_LIGHT' ||
+            ship.role === 'SY_MEDIUM' ||
+            ship.role === 'SY_HEAVY' ||
+            ship.isStationary ||
+            String((ship as any).structureType || '').startsWith('SY_');
+
+          if (isFacility) {
+            engine.setRallyPoint(ship.id, worldMouse);
+          } else {
+            engine.setSplineOrder(ship.id, worldMouse);
+          }
         }
         return;
       }
@@ -3339,24 +3881,28 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
   };
 
   const getGalacticCameraBounds = (systems: any[] = []): { minX: number; maxX: number; minY: number; maxY: number } => {
-    const fallbackRadius = 350000;
+    const fallbackRadius = 2500000;
+    // Always include current camera position plus a comfortable buffer so zoom never clamps away from user view
+    const camX = isFinite(cameraRef.current.x) ? cameraRef.current.x : 0;
+    const camY = isFinite(cameraRef.current.y) ? cameraRef.current.y : 0;
+    let minX = camX - 800000;
+    let maxX = camX + 800000;
+    let minY = camY - 800000;
+    let maxY = camY + 800000;
+
     if (!systems || systems.length === 0) {
       return {
-        minX: -fallbackRadius,
-        maxX: fallbackRadius,
-        minY: -fallbackRadius,
-        maxY: fallbackRadius
+        minX: Math.min(minX, -fallbackRadius),
+        maxX: Math.max(maxX, fallbackRadius),
+        minY: Math.min(minY, -fallbackRadius),
+        maxY: Math.max(maxY, fallbackRadius)
       };
     }
 
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-
     for (let i = 0; i < systems.length; i++) {
       const sys = systems[i];
-      const boundary = sys.deepSpaceBoundaryRadius || 300000;
+      if (!sys || !sys.center) continue;
+      const boundary = sys.deepSpaceBoundaryRadius || sys.systemBoundaryRadius || 350000;
       
       const left = sys.center.x - boundary;
       const right = sys.center.x + boundary;
@@ -3369,7 +3915,7 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
       if (bottom > maxY) maxY = bottom;
     }
 
-    const margin = 150000;
+    const margin = 300000;
     return {
       minX: minX - margin,
       maxX: maxX + margin,
@@ -3378,28 +3924,34 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
     };
   };
 
-  const applyAnchoredZoom = useCallback((zoomFactor: number, mouseCanvasX: number, mouseCanvasY: number, width: number, height: number) => {
+  const applyAnchoredZoom = useCallback((zoomFactor: number, mouseScreenX: number, mouseScreenY: number, screenW: number, screenH: number) => {
     const oldZoom = cameraRef.current.zoom;
+    if (!isFinite(oldZoom) || oldZoom <= 0) return;
+
     const newZoom = Math.max(Math.min(oldZoom * zoomFactor, MAX_ZOOM), minZoom);
+    if (!isFinite(newZoom) || newZoom <= 0) return;
 
-    if (newZoom !== oldZoom) {
-      const worldUnderMouse = screenToWorld(mouseCanvasX, mouseCanvasY, width, height);
+    if (Math.abs(newZoom - oldZoom) > 1e-7) {
+      const worldUnderMouse = screenToWorld(mouseScreenX, mouseScreenY, screenW, screenH);
+      if (!isFinite(worldUnderMouse.x) || !isFinite(worldUnderMouse.y)) return;
 
-      // Update camera
+      // Update camera zoom
       cameraRef.current.zoom = newZoom;
       
       const bounds = getGalacticCameraBounds((engine as any).systems);
       
-      // Recalculate camera position to keep worldUnderMouse fixed and clamped
-      const newX = worldUnderMouse.x - (mouseCanvasX - width * 0.5) / newZoom;
-      const newY = worldUnderMouse.y - (mouseCanvasY - height * 0.5) / newZoom;
+      // Recalculate camera position to keep the world position under the mouse stationary on screen
+      const newX = worldUnderMouse.x - (mouseScreenX - screenW * 0.5) / newZoom;
+      const newY = worldUnderMouse.y - (mouseScreenY - screenH * 0.5) / newZoom;
       
-      cameraRef.current.x = Math.max(bounds.minX, Math.min(bounds.maxX, newX));
-      cameraRef.current.y = Math.max(bounds.minY, Math.min(bounds.maxY, newY));
+      if (isFinite(newX) && isFinite(newY)) {
+        cameraRef.current.x = Math.max(bounds.minX, Math.min(bounds.maxX, newX));
+        cameraRef.current.y = Math.max(bounds.minY, Math.min(bounds.maxY, newY));
+      }
       
       setZoomLevel(newZoom);
     }
-  }, [screenToWorld, minZoom, engine]);
+  }, [screenToWorld, minZoom, engine, MAX_ZOOM]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -3409,17 +3961,22 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
       event.preventDefault();
 
       const rect = canvas.getBoundingClientRect();
-      // 1. Calculate true canvas-relative cursor coordinates, accounting for CSS/DPI scaling
-      const scaleX = canvas.width / rect.width;
-      const scaleY = canvas.height / rect.height;
-      const mouseCanvasX = (event.clientX - rect.left) * scaleX;
-      const mouseCanvasY = (event.clientY - rect.top) * scaleY;
+      if (!rect.width || !rect.height) return;
 
-      // 2. Determine zoom delta
-      const zoomFactor = event.deltaY < 0 ? 1.15 : 0.85;
+      // Cursor position in CSS pixels relative to canvas top-left
+      const mouseScreenX = event.clientX - rect.left;
+      const mouseScreenY = event.clientY - rect.top;
 
-      // 3. Dispatch anchored zoom update
-      applyAnchoredZoom(zoomFactor, mouseCanvasX, mouseCanvasY, canvas.width, canvas.height);
+      // Smooth normalized zoom delta handling for trackpads, mouse wheels, and line/page modes
+      let dy = event.deltaY;
+      if (event.deltaMode === 1) dy *= 20; // DOM_DELTA_LINE
+      else if (event.deltaMode === 2) dy *= 100; // DOM_DELTA_PAGE
+
+      // Clamp delta to prevent sudden erratic spikes
+      const clampedDelta = Math.max(-100, Math.min(100, dy));
+      const zoomFactor = Math.exp(-clampedDelta * 0.0013);
+
+      applyAnchoredZoom(zoomFactor, mouseScreenX, mouseScreenY, rect.width, rect.height);
     };
 
     canvas.addEventListener('wheel', handleWheel, { passive: false });
@@ -3433,16 +3990,9 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
     const centerScreen = { x: rect.width * 0.5, y: rect.height * 0.5 };
-    const worldUnderCenter = screenToWorld(centerScreen.x, centerScreen.y, rect.width, rect.height);
-    const newZoom = Math.max(Math.min(cameraRef.current.zoom * factor, MAX_ZOOM), minZoom);
-
-    if (newZoom !== cameraRef.current.zoom) {
-      cameraRef.current.zoom = newZoom;
-      cameraRef.current.x = worldUnderCenter.x;
-      cameraRef.current.y = worldUnderCenter.y;
-      setZoomLevel(newZoom);
-    }
+    applyAnchoredZoom(factor, centerScreen.x, centerScreen.y, rect.width, rect.height);
   };
 
   const setMacroView = () => {
@@ -3452,6 +4002,20 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
     setZoomLevel(minZoom);
   };
 
+  const setSystemView = () => {
+    const selected = engine.getSelectedShip();
+    const homeworldPlanet = engine.solarSystem?.primaryHabitablePlanet || (engine as any).systems?.[0]?.solarSystem?.primaryHabitablePlanet;
+    if (selected) {
+      cameraRef.current.x = selected.pos.x;
+      cameraRef.current.y = selected.pos.y;
+    } else if (homeworldPlanet) {
+      cameraRef.current.x = homeworldPlanet.pos.x;
+      cameraRef.current.y = homeworldPlanet.pos.y;
+    }
+    cameraRef.current.zoom = 0.003;
+    setZoomLevel(0.003);
+  };
+
   const resetZoom = () => {
     cameraRef.current.zoom = 0.38;
     const selected = engine.getSelectedShip();
@@ -3459,8 +4023,18 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
       cameraRef.current.x = selected.pos.x;
       cameraRef.current.y = selected.pos.y;
     } else {
-      cameraRef.current.x = 0;
-      cameraRef.current.y = 0;
+      const friendly = (engine.ships ?? []).find((s) => s && s.faction === 'FRIENDLY' && s.hullState !== 'DESTROYED');
+      const homeworldPlanet = engine.solarSystem?.primaryHabitablePlanet || (engine as any).systems?.[0]?.solarSystem?.primaryHabitablePlanet;
+      if (friendly) {
+        cameraRef.current.x = friendly.pos.x;
+        cameraRef.current.y = friendly.pos.y;
+      } else if (homeworldPlanet) {
+        cameraRef.current.x = homeworldPlanet.pos.x;
+        cameraRef.current.y = homeworldPlanet.pos.y;
+      } else {
+        cameraRef.current.x = 0;
+        cameraRef.current.y = 0;
+      }
     }
     setZoomLevel(0.38);
   };
@@ -3534,10 +4108,7 @@ export const TacticalCanvas: React.FC<TacticalCanvasProps> = ({
           </button>
           <button
             id="btn-zoom-system"
-            onClick={() => {
-              cameraRef.current.zoom = 0.003;
-              setZoomLevel(0.003);
-            }}
+            onClick={setSystemView}
             className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 rounded border border-slate-600 text-slate-300 text-[10px] cursor-pointer"
             title="System Overview View (0.003x)"
           >

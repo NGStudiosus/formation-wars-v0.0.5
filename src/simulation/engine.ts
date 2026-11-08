@@ -29,7 +29,28 @@ import {
   FleetGroup,
   FleetPdPosture,
   SensorBlip,
+  RefineryProgressState,
+  FactionId,
+  GameSetupConfig,
+  DebugState,
+  HomeworldTypeId,
+  HqTypeId,
+  ScrapEntity,
+  ScrapCargoItem,
+  ScrapSize,
 } from '../types';
+import {
+  HOMEWORLD_REGISTRY,
+  HQ_REGISTRY,
+  applyHQDefinitionToShip,
+  applyHomeworldTypeToPlanet,
+  getDefaultHQForFaction,
+  getDefaultHomeworldForFaction,
+  HqTypeDefinition,
+  HomeworldTypeDefinition,
+} from './hqRegistry';
+import { FACTION_REGISTRY, ALL_FACTION_IDS } from './factions/factionRegistry';
+import { processRefineryOre } from './economy';
 import { state as globalState, getOperationalLabCounts, setGlobalGalaxyData, GameStatus } from '../state/gameState';
 import { generateGalaxy, generateSingleSystem } from './solarSystem';
 import {
@@ -50,6 +71,8 @@ import {
   issueMoveCommand,
   updateShipMovementTick,
   checkSublightPerimeterInterdiction,
+  initiateMicroJump,
+  updateMicroJumpKinematics,
 } from './movementController';
 import {
   initiateSingleJump,
@@ -72,6 +95,15 @@ import {
   isHullUnlocked,
   isStructureUnlocked,
 } from './researchManager';
+import {
+  DiplomacyState,
+  initializeDiplomacyState,
+  getAlliedFactions,
+  offerAlliance,
+  acceptAlliance,
+  breakAlliance,
+  setPlayerTeam,
+} from './diplomacyController';
 import {
   calculateOreConversionRate,
   calculateMaxOreStorage,
@@ -136,13 +168,15 @@ import {
 } from './minerController';
 import { hermiteInterpolate, distSq, normalize, computeSplineTangents } from './hermite';
 import { createDefaultShips } from './scenarios';
-import { getShipHullSpec, getShipArmament, applyShipArmament, applyShipKinematics, getShipKinematics } from './shipPrototypes';
+import { getShipHullSpec, getShipArmament, applyShipArmament, applyShipKinematics, getShipKinematics, SHIP_PROTOTYPES } from './shipPrototypes';
 import {
   updateCombatTick,
   updateShipCombatTick,
   fireMissileSalvo as runCombatSalvo,
   CombatSimulationState,
   CombatModifiers,
+  triggerShieldReboot,
+  updateShieldCycling,
 } from './combatEngine';
 import { ensureShipCombatReady } from './shipController';
 import { createDefaultAsteroidBelt, createAsteroid } from './asteroids';
@@ -151,6 +185,7 @@ import {
   stepCometKinematics,
   stepPlanetKinematics,
   stepAsteroidBeltKinematics,
+  syncAllAsteroidsKinematics,
   ORBITAL_CONFIG,
   ENABLE_ORBITAL_REVOLUTION,
   GRAVITY_WELL_CONFIG,
@@ -163,6 +198,7 @@ import {
 import { generatePirateFaction, spawnSystemHostiles, steerTowards, updateInnerPlanetaryPatrol } from './pirates';
 import { PlanetEntity } from './celestialTypes';
 import { initNPCPatrolState, updateNPCPatrol, handleNPCOnArrival } from './npcController';
+import { areShipsHostile } from './targetingSystem';
 import { BASE_TACTICAL_RANGES, updateSensorsAndFogOfWar } from './sensorController';
 import { updateSensorVisibility } from './sensors';
 import { AsteroidSpatialStore } from './spatialBuffer';
@@ -237,9 +273,22 @@ export class SimulationEngine {
   private logIdCounter = 0;
   private hostileAutoFireTimer = 0;
   private vanguardRespawnTimer = 0;
+  public scraps: ScrapEntity[] = [];
+
+  public playerFaction: FactionId = 'NOVAN';
+  public homeworldType: HomeworldTypeId = 'TERRAN';
+  public hqType: HqTypeId = 'NOVAN_COMMAND_SPIRE';
+  public gameSetupConfig?: GameSetupConfig;
+  public diplomacyState: DiplomacyState = initializeDiplomacyState();
 
   public researchStations: ResearchStationCounts = { military: 0, civic: 0, expansion: 0 };
   public researchManager: ResearchManager = researchManager;
+  public debugState: DebugState = { revealAllMap: false, freeResearch: false };
+  public research = {
+    completedTechIds: [] as string[],
+    activeTechId: null as string | null,
+    progress: 0,
+  };
 
   // Real-time scalar research multipliers directly applied into engine mechanics
   public missileYieldMult: number = 1.0;
@@ -269,6 +318,7 @@ export class SimulationEngine {
   public minerTurnaroundSpeedMult: number = 1.0;
   public refineryYieldMult: number = 1.0;
   public refinerySpeedMult: number = 1.0;
+  public refineryProgress: RefineryProgressState = { oreAccumulator: 0, totalNeridiumExtracted: 0 };
   public freighterCargoMult: number = 1.0;
   public oreConversionMult: number = 1.0;
   public structureBuildSpeedMult: number = 1.0;
@@ -299,6 +349,13 @@ export class SimulationEngine {
 
   public recalculateResearchScalars(): void {
     const nodes = this.researchManager.completedNodes;
+
+    if (nodes.has('HQ_BUILDINGS_EXPANSION')) {
+      const hq = this.ships.find((s) => s.role === 'HQ');
+      if (hq) {
+        hq.maxMountedModules = 6;
+      }
+    }
 
     // --- Ordnance & Missile Multipliers ---
     let missileYield = 1.0;
@@ -477,6 +534,7 @@ export class SimulationEngine {
     if (nodes.has('exp-t6-infra')) colonyCap += 0.20;
     if (nodes.has('exp-t7')) colonyCap += 0.30;
     if (nodes.has('exp-t8-domes')) colonyCap += 0.25;
+    if (this.playerFaction === 'LIAAL') colonyCap *= 1.30;
     this.colonyCapacityMult = colonyCap;
 
     let colonyTax = 1.0;
@@ -486,6 +544,26 @@ export class SimulationEngine {
     this.colonyTaxMult = colonyTax;
 
     this.scoutSpeedMult = nodes.has('exp-t1-scout') ? 1.15 : 1.0;
+
+    // Faction-Specific Baseline Doctrine Multipliers
+    if (this.playerFaction === 'KOVAK') {
+      this.hullHpMult *= 0.40;          // 40% durability / universal positive stats
+      this.shieldCapMult *= 0.40;       // 40% shield capacity
+      this.shieldRegenMult *= 0.40;     // Slower shield recharge and instability
+      this.pdRangeMult *= 0.90;         // 10% reduction in PD ranges
+      this.shipyardSpeedMult *= 2.0;    // Volume over quality: 50% build time (2x speed)
+    } else if (this.playerFaction === 'LIAAL') {
+      this.hullHpMult *= 0.30;       // 30% durability
+      this.shieldCapMult *= 0.30;     // 30% shielding
+      this.freighterCargoMult *= 2.0; // 2x cargo capacity
+      this.popGrowthMult *= 1.5;      // 50% faster population growth / terraforming
+    } else if (this.playerFaction === 'GARN') {
+      this.hullHpMult *= 1.65;
+      this.shieldCapMult *= 1.35;
+    } else if (this.playerFaction === 'YESTIRI') {
+      this.shieldCapMult *= 1.40;
+      this.hullHpMult *= 1.15;
+    }
 
     // --- Modular HQ Internal Upgrade Systems ---
     // 1. Modular Refinery Parallel Tracks (10.0 Ore/s + unlockedRefineryCount * 10.0)
@@ -559,7 +637,8 @@ export class SimulationEngine {
           graserArmorPiercingMultiplier: 1.0,
         },
         isTargetInFriendlyVisualRange: (pos: Vec2D) => this.isTargetInFriendlyVisualRange(pos),
-        addLog: (cat: string, msg: string, lvl?: any) => this.addLog(cat as any, msg, lvl),
+        addLog: (cat: string, msg: string, lvl?: any, isPlayerOwned?: boolean, sourceFaction?: string) =>
+          this.addLog(cat as any, msg, lvl, isPlayerOwned, sourceFaction),
         applyHitToShip: (target: ShipEntity, damage: number) => this.applyHitToShip(target, damage),
         nextMissileId: () => `m-${++this.missileIdCounter}`,
       };
@@ -617,7 +696,16 @@ export class SimulationEngine {
   }
 
   public isHullUnlocked(shipClass: string): boolean {
-    return this.researchManager.isHullUnlocked(shipClass);
+    const allied = this.diplomacyState
+      ? getAlliedFactions(this.playerFaction, this.diplomacyState)
+      : [this.playerFaction];
+    return this.researchManager.isHullUnlocked(shipClass, this.playerFaction, allied);
+  }
+
+  public getDiplomaticAllies(): FactionId[] {
+    return this.diplomacyState
+      ? getAlliedFactions(this.playerFaction, this.diplomacyState)
+      : [this.playerFaction];
   }
 
   public isStructureUnlocked(structureType: StructureType): boolean {
@@ -639,6 +727,22 @@ export class SimulationEngine {
       },
       (cat, msg, lvl) => this.addLog(cat as any, msg, lvl)
     );
+  }
+
+  public enqueueResearch(nodeId: string): { success: boolean; position?: number; error?: string } {
+    return this.researchManager.enqueueNode(nodeId, (cat, msg, lvl) => this.addLog(cat as any, msg, lvl));
+  }
+
+  public removeFromResearchQueue(nodeId: string): { success: boolean } {
+    return this.researchManager.dequeueNode(nodeId, (cat, msg, lvl) => this.addLog(cat as any, msg, lvl));
+  }
+
+  public getResearchQueue(branch: any): string[] {
+    return this.researchManager.getQueue(branch);
+  }
+
+  public clearResearchQueue(branch?: any): void {
+    this.researchManager.clearQueue(branch);
   }
 
   public cancelResearch(branchOrNodeId: string): { success: boolean; error?: string } {
@@ -752,6 +856,11 @@ export class SimulationEngine {
 
   public sanitizeShip(s: ShipEntity): ShipEntity {
     if (!s) return s;
+    if (s.faction === 'FRIENDLY' && !s.factionId) {
+      s.factionId = this.playerFaction || 'NOVAN';
+    } else if (s.faction === 'HOSTILE' && !s.factionId) {
+      s.factionId = 'KOVAK';
+    }
     const spec = getShipHullSpec(s);
     if (!s.renderedLength) s.renderedLength = spec.renderedLengthPx;
     if (!s.selectionRadius) s.selectionRadius = spec.selectionRadiusPx;
@@ -788,6 +897,57 @@ export class SimulationEngine {
     }
     s.radarRange = BASE_TACTICAL_RANGES.radarRangeKm;
     s.passiveRange = BASE_TACTICAL_RANGES.passiveRangeKm;
+    if (s.pos) {
+      if (s.x === undefined) s.x = s.pos.x;
+      if (s.y === undefined) s.y = s.pos.y;
+    } else if (s.x !== undefined && s.y !== undefined) {
+      s.pos = { x: s.x, y: s.y };
+    }
+    if (s.faction === 'HOSTILE') {
+      if (!s.visibilityTier) s.visibilityTier = 'NONE';
+      if (!s.visibilityState) s.visibilityState = 'HIDDEN';
+    }
+
+    // Ensure Robust Hull & Health Attributes
+    const proto = (SHIP_PROTOTYPES as any)[s.role] || (STRUCTURE_CATALOG as any)[s.role];
+    const defaultHull = proto?.specs?.hull ?? proto?.hullMax ?? (s as any).hull ?? (spec.baseRadius ? spec.baseRadius * 50 : 500.0);
+    const defaultShield = proto?.specs?.shield ?? (s as any).shieldMax ?? (s as any).maxShield ?? 1000.0;
+
+    if (!s.hullMax || isNaN(s.hullMax) || s.hullMax <= 0) {
+      s.hullMax = defaultHull;
+    }
+    if (s.hullHp === undefined || isNaN(s.hullHp) || s.hullHp === null) {
+      s.hullHp = (s as any).hull !== undefined && !isNaN((s as any).hull) ? (s as any).hull : s.hullMax;
+    }
+    s.hull = s.hullHp;
+    if (s.maxRepairableHull === undefined || isNaN(s.maxRepairableHull)) {
+      s.maxRepairableHull = s.hullMax;
+    }
+    if (!s.hullState) {
+      s.hullState = s.hullHp <= 0 ? 'DESTROYED' : s.hullHp <= 0.125 * s.hullMax ? 'DISABLED' : s.hullHp <= 0.25 * s.hullMax ? 'CRIPPLED' : 'OPERATIONAL';
+    }
+    s.crippleBarMax = 0.25 * s.hullMax;
+    if (s.crippleBar === undefined || isNaN(s.crippleBar)) {
+      s.crippleBar = Math.min(s.crippleBarMax, Math.max(0, s.hullHp));
+    }
+
+    // Ensure Robust Shield Attributes
+    if (!s.shieldHpMax || isNaN(s.shieldHpMax) || s.shieldHpMax <= 0) {
+      s.shieldHpMax = defaultShield;
+    }
+    if (s.shieldHp === undefined || isNaN(s.shieldHp) || s.shieldHp === null) {
+      s.shieldHp = (s as any).shield !== undefined && !isNaN((s as any).shield) ? (s as any).shield : s.shieldHpMax;
+    }
+    if (s.currentShield === undefined) {
+      s.currentShield = s.shieldHp;
+    }
+    if (s.shieldHeatMax === undefined || isNaN(s.shieldHeatMax)) {
+      s.shieldHeatMax = 100.0;
+    }
+    if (s.shieldHeat === undefined || isNaN(s.shieldHeat)) {
+      s.shieldHeat = 0;
+    }
+
     ensureShipCombatReady(s);
     return s;
   }
@@ -876,17 +1036,37 @@ export class SimulationEngine {
   /**
    * Initializes or regenerates the procedural multi-system galaxy hierarchy and docks HQ/fleet
    */
-  public initSolarSystemAndEntities(seed?: number, systemCount?: number, systemSpacing?: number) {
+  public initSolarSystemAndEntities(
+    seed?: number,
+    systemCount?: number,
+    systemSpacing?: number,
+    homeworldTypeParam?: HomeworldTypeId,
+    hqTypeParam?: HqTypeId
+  ) {
     const effectiveSeed = seed ?? this.config.seed ?? 1337;
     const effectiveSystemCount = systemCount ?? (this.config as any).systemCount ?? 4;
     const effectiveSystemSpacing = systemSpacing ?? (this.config as any).systemSpacing ?? 250000;
     (this.config as any).systemCount = effectiveSystemCount;
     (this.config as any).systemSpacing = effectiveSystemSpacing;
 
+    if (homeworldTypeParam) {
+      this.homeworldType = homeworldTypeParam;
+    } else if (!this.homeworldType) {
+      this.homeworldType = getDefaultHomeworldForFaction(this.playerFaction);
+    }
+
+    if (hqTypeParam) {
+      this.hqType = hqTypeParam;
+    } else if (!this.hqType) {
+      this.hqType = getDefaultHQForFaction(this.playerFaction);
+    }
+
     const galaxyRes = generateGalaxy({
       systemCount: effectiveSystemCount,
       systemSpacing: effectiveSystemSpacing,
       seed: effectiveSeed,
+      factionId: this.playerFaction,
+      homeworldType: this.homeworldType,
     });
     this.galaxyResult = galaxyRes;
     this.systems = galaxyRes.systems;
@@ -899,42 +1079,77 @@ export class SimulationEngine {
     setGlobalGalaxyData(this.systems, galaxyRes.allPlanets, galaxyRes.allAsteroids);
     globalState.ships = this.ships;
 
-    // Anchor Player HQ to stationary anchor docked into upper-right shoulder (-45 deg) of Aegis-IV:
+    // Apply designated homeworld biome to primary habitable planet
     const primaryPlanet = this.solarSystem.primaryHabitablePlanet;
-    const hq = this.ships.find((s) => s.role === 'HQ');
-    const hqStationRadius = HQ_CONFIG.radius; // 90.0px (20% of ~450px planet)
-    const hqOffset = calculateHQAnchorOffset(primaryPlanet.radius, hqStationRadius);
-    const hqPos: Vec2D = {
-      x: primaryPlanet.pos.x + hqOffset.x,
-      y: primaryPlanet.pos.y + hqOffset.y,
-    };
-
-    if (hq) {
-      hq.pos.x = hqPos.x;
-      hq.pos.y = hqPos.y;
-      hq.velocity = { x: 0, y: 0 };
-      hq.isStationary = true;
-      hq.radius = HQ_CONFIG.radius;
-      hq.dockingRadius = HQ_CONFIG.dockingRadius;
-      hq.inGravityWell = true;
-      hq.gravityWellBody = primaryPlanet.name;
-      hq.capturedReferenceFrame = {
-        id: primaryPlanet.id,
-        name: primaryPlanet.name,
-        type: 'PLANET',
-        center: { ...primaryPlanet.pos },
-        localOffset: { x: hqOffset.x, y: hqOffset.y },
-      };
-      hq.isMoored = true;
+    if (primaryPlanet) {
+      applyHomeworldTypeToPlanet(primaryPlanet, this.homeworldType);
     }
 
-    // Position friendly taskforce in tactical escort formation around HQ with clearance
+    // Configure and position HQ entity independently
+    const hq = this.ships.find((s) => s.role === 'HQ');
+    if (hq && primaryPlanet) {
+      applyHQDefinitionToShip(hq, this.hqType, this.playerFaction, primaryPlanet);
+
+      const isRing = hq.isRingStructure || hq.hqType === 'GARN_RING_CITADEL' || hq.isGarnRing;
+      const isMobile = hq.isMobile || hq.hqType === 'YESTIRI_CITY_SHIP' || hq.isCityShip;
+
+      if (isRing) {
+        // Garn Ring Citadel: Encircles the homeworld planet as an annular orbital megastructure
+        hq.pos.x = primaryPlanet.pos.x;
+        hq.pos.y = primaryPlanet.pos.y;
+        const ringInnerR = primaryPlanet.radius * 1.40;
+        const ringOuterR = primaryPlanet.radius * 1.68;
+        hq.ringInnerRadius = ringInnerR;
+        hq.ringOuterRadius = ringOuterR;
+        hq.radius = ringOuterR;
+        hq.renderedLength = ringOuterR * 2.0;
+        hq.dockingRadius = ringOuterR + 40.0;
+        // Ore transfer space sits as a FUNCTION of the size of the HQ: 250km outside outer visual edge of actual ring
+        hq.oreDropOffRange = ringOuterR + 250.0;
+        hq.selectionRadius = ringOuterR + 30.0;
+        hq.pdplaRange = 600.0;
+        hq.isStationary = true;
+        hq.velocity = { x: 0, y: 0 };
+        hq.inGravityWell = true;
+        hq.gravityWellBody = primaryPlanet.name;
+        hq.capturedReferenceFrame = {
+          id: primaryPlanet.id,
+          name: primaryPlanet.name,
+          type: 'PLANET',
+          center: { ...primaryPlanet.pos },
+          localOffset: { x: 0, y: 0 },
+        };
+        hq.isMoored = true;
+      } else {
+        const hqStationRadius = hq.radius || HQ_CONFIG.radius;
+        const hqOffset = calculateHQAnchorOffset(primaryPlanet.radius, hqStationRadius);
+        hq.pos.x = primaryPlanet.pos.x + hqOffset.x;
+        hq.pos.y = primaryPlanet.pos.y + hqOffset.y;
+        hq.velocity = { x: 0, y: 0 };
+        hq.inGravityWell = true;
+        hq.gravityWellBody = primaryPlanet.name;
+        hq.capturedReferenceFrame = {
+          id: primaryPlanet.id,
+          name: primaryPlanet.name,
+          type: 'PLANET',
+          center: { ...primaryPlanet.pos },
+          localOffset: { x: hqOffset.x, y: hqOffset.y },
+        };
+        hq.isMoored = !isMobile;
+        hq.isStationary = !isMobile;
+      }
+    }
+
+    // Position friendly taskforce in tactical escort formation around HQ/Planet with clearance
+    const isRing = hq?.isRingStructure || hq?.hqType === 'GARN_RING_CITADEL' || hq?.isGarnRing;
     const friendlyUnits = this.ships.filter((s) => s.faction === 'FRIENDLY' && s.role !== 'HQ');
     friendlyUnits.forEach((s, idx) => {
       const formAngle = Math.PI * 0.75 + (idx - 0.5) * 0.45;
-      const formDist = (280 + (idx % 2) * 80) * 1.5;
-      s.pos.x = hqPos.x + Math.cos(formAngle) * formDist;
-      s.pos.y = hqPos.y + Math.sin(formAngle) * formDist;
+      const baseDist = isRing ? (primaryPlanet.radius * 1.75 + 180) : ((hq?.radius || 90) * 1.8 + 120);
+      const formDist = baseDist + (idx % 2) * 80;
+      const centerOrigin = isRing ? primaryPlanet.pos : (hq ? hq.pos : primaryPlanet.pos);
+      s.pos.x = centerOrigin.x + Math.cos(formAngle) * formDist;
+      s.pos.y = centerOrigin.y + Math.sin(formAngle) * formDist;
       s.velocity = { x: 0, y: 0 };
       s.splineActive = false;
       s.waypoints = [];
@@ -950,18 +1165,36 @@ export class SimulationEngine {
 
     // Retain existing friendly ships (HQ, Vanguard, logistics, miners, shipyard)
     const friendlyShips = this.ships.filter((s) => s.faction === 'FRIENDLY');
+    friendlyShips.forEach((s) => {
+      s.factionId = this.playerFaction || 'NOVAN';
+      s.systemId = homeworldDescriptor.id;
+    });
 
     // System-Aware Hostile Fleet & Planetary Garrison Spawning
     const allHostiles: ShipEntity[] = [];
     for (let i = 0; i < this.systems.length; i++) {
       const sys = this.systems[i];
+      if (i > 0 && this.gameSetupConfig?.systemOpponents && this.gameSetupConfig.systemOpponents[i - 1]) {
+        sys.assignedFaction = this.gameSetupConfig.systemOpponents[i - 1];
+      } else if (i === 0) {
+        sys.assignedFaction = this.playerFaction || 'NOVAN';
+      }
       const hostiles = spawnSystemHostiles(sys, this);
       allHostiles.push(...hostiles);
     }
 
     // Homeworld Outer Deep-Space Pirate Bastion & Garrison
     const pirateRng = new SeededRNG(effectiveSeed + 7777);
-    const pirateResult = generatePirateFaction(this.solarSystem, pirateRng, hqPos);
+    const effectiveHqPos = hq ? hq.pos : primaryPlanet.pos;
+    const pirateResult = generatePirateFaction(this.solarSystem, pirateRng, effectiveHqPos);
+    pirateResult.bastion.factionId = 'PIRATE';
+    pirateResult.bastion.isPirate = true;
+    pirateResult.bastion.systemId = homeworldDescriptor.id;
+    pirateResult.bastionGarrison.forEach((g) => {
+      g.factionId = 'PIRATE';
+      g.isPirate = true;
+      g.systemId = homeworldDescriptor.id;
+    });
     allHostiles.push(pirateResult.bastion);
     allHostiles.push(...pirateResult.bastionGarrison);
 
@@ -1005,16 +1238,60 @@ export class SimulationEngine {
   }
 
   /**
-   * Begins an active campaign with the specified system count (2-8)
+   * Begins an active campaign with the specified system count (1-8) and faction configuration
    */
-  public startCampaign(systemCount: number = 4, seed: number = Date.now()) {
+  public startCampaign(setupOrCount: number | GameSetupConfig = 4, seed: number = Date.now()) {
+    let systemCount = 4;
+    let playerFaction: FactionId = 'NOVAN';
+    let systemOpponents: FactionId[] = [];
+
+    if (typeof setupOrCount === 'number') {
+      systemCount = Math.min(8, Math.max(2, setupOrCount || 2));
+      const pool = ALL_FACTION_IDS.filter((f) => f !== 'NOVAN');
+      systemOpponents = Array.from({ length: Math.max(1, systemCount - 1) }, (_, i) => pool[i % pool.length]);
+      this.homeworldType = getDefaultHomeworldForFaction('NOVAN');
+      this.hqType = getDefaultHQForFaction('NOVAN');
+      this.gameSetupConfig = {
+        systemCount,
+        playerFaction,
+        systemOpponents,
+        homeworldType: this.homeworldType,
+        hqType: this.hqType,
+      };
+    } else {
+      systemCount = Math.min(8, Math.max(2, setupOrCount.systemCount || 2));
+      playerFaction = setupOrCount.playerFaction;
+      const pool = ALL_FACTION_IDS.filter((f) => f !== playerFaction);
+      const needed = systemCount - 1;
+      systemOpponents = Array.from({ length: needed }, (_, i) =>
+        (setupOrCount.systemOpponents && setupOrCount.systemOpponents[i]) || pool[i % pool.length]
+      );
+      this.homeworldType = setupOrCount.homeworldType || getDefaultHomeworldForFaction(playerFaction);
+      this.hqType = setupOrCount.hqType || getDefaultHQForFaction(playerFaction);
+      this.gameSetupConfig = {
+        systemCount,
+        playerFaction,
+        systemOpponents,
+        homeworldType: this.homeworldType,
+        hqType: this.hqType,
+      };
+    }
+
+    this.playerFaction = playerFaction;
+    globalState.playerFaction = playerFaction;
+    globalState.factionId = playerFaction;
+    globalState.gameSetupConfig = this.gameSetupConfig;
+
     this.gameStatus = 'ACTIVE';
     globalState.gameStatus = 'ACTIVE';
     this.isPaused = false;
-    this.initSolarSystemAndEntities(seed, systemCount, 250000);
+    this.initSolarSystemAndEntities(seed, systemCount, 250000, this.homeworldType, this.hqType);
+    this.diplomacyState = initializeDiplomacyState(this.gameSetupConfig, this.systems, this.playerFaction);
+    (globalState as any).diplomacyState = this.diplomacyState;
+    const facName = FACTION_REGISTRY[playerFaction]?.name || playerFaction;
     this.addLog(
       'TACTICAL',
-      `CAMPAIGN INITIALIZED // Sector Commission: ${systemCount} Star Systems online. Fleet commissioned.`,
+      `CAMPAIGN INITIALIZED // Sector Commission: ${systemCount} Star Systems online. ${facName} Fleet commissioned.`,
       'info'
     );
   }
@@ -1026,46 +1303,52 @@ export class SimulationEngine {
   public updateSolarSystem(dt: number) {
     if (!this.solarSystem) return;
 
-    const systemsToUpdate = this.systems && this.systems.length > 0
-      ? this.systems.map((s) => s.solarSystem).filter(Boolean) as SolarSystem[]
-      : [this.solarSystem];
-
-    for (const sys of systemsToUpdate) {
-      // 1. High-eccentricity Comets
-      if (ORBITAL_CONFIG.comets && sys.comets) {
-        for (const comet of sys.comets) {
-          stepCometKinematics(comet, dt);
+    if (this.systems && this.systems.length > 0) {
+      for (let sIdx = 0; sIdx < this.systems.length; sIdx++) {
+        const sys = this.systems[sIdx]?.solarSystem;
+        if (!sys) continue;
+        if (ORBITAL_CONFIG.comets && sys.comets) {
+          for (let i = 0; i < sys.comets.length; i++) stepCometKinematics(sys.comets[i], dt);
+        }
+        if (ORBITAL_CONFIG.planetsMoons) {
+          if (sys.rockyPlanets) {
+            for (let i = 0; i < sys.rockyPlanets.length; i++) stepPlanetKinematics(sys.rockyPlanets[i], dt);
+          }
+          if (sys.gasGiants) {
+            for (let i = 0; i < sys.gasGiants.length; i++) stepPlanetKinematics(sys.gasGiants[i], dt);
+          }
+        }
+        if (ORBITAL_CONFIG.asteroidBeltClusters && sys.clusters) {
+          stepAsteroidBeltKinematics(sys.clusters, this.asteroids, dt);
         }
       }
-
-      // 2. Rocky Planets & Gas Giants
+      if (ORBITAL_CONFIG.asteroidBeltClusters) {
+        syncAllAsteroidsKinematics(this.asteroids, dt);
+      }
+    } else {
+      const sys = this.solarSystem;
+      if (ORBITAL_CONFIG.comets && sys.comets) {
+        for (let i = 0; i < sys.comets.length; i++) stepCometKinematics(sys.comets[i], dt);
+      }
       if (ORBITAL_CONFIG.planetsMoons) {
         if (sys.rockyPlanets) {
-          for (const planet of sys.rockyPlanets) {
-            stepPlanetKinematics(planet, dt);
-          }
+          for (let i = 0; i < sys.rockyPlanets.length; i++) stepPlanetKinematics(sys.rockyPlanets[i], dt);
         }
         if (sys.gasGiants) {
-          for (const giant of sys.gasGiants) {
-            stepPlanetKinematics(giant, dt);
-          }
+          for (let i = 0; i < sys.gasGiants.length; i++) stepPlanetKinematics(sys.gasGiants[i], dt);
         }
       }
-
-      // 3. Asteroid Belt & Cluster Formations
       if (ORBITAL_CONFIG.asteroidBeltClusters && sys.clusters) {
         stepAsteroidBeltKinematics(sys.clusters, this.asteroids, dt);
+        syncAllAsteroidsKinematics(this.asteroids, dt);
       }
     }
 
-    if (ORBITAL_CONFIG.asteroidBeltClusters) {
-      this.asteroidSpatialStore.syncPositions(this.asteroids);
-    }
-
-    // 4. Maintain Player HQ stationary locked into Aegis-IV upper-right shoulder:
+    // 4. Maintain Player HQ stationary locked into position (ring centered on planet, others in upper-right shoulder):
     const primaryPlanet = this.solarSystem.primaryHabitablePlanet;
     const hq = this.getHQ();
-    if (hq && primaryPlanet) {
+    const isRingHq = Boolean(hq?.isRingStructure || hq?.hqType === 'GARN_RING_CITADEL' || hq?.isGarnRing);
+    if (hq && primaryPlanet && !hq.isCityShip && !hq.isYestiriRing && !isRingHq) {
       const hqStationRadius = hq.radius ?? 80.0;
       const hqOffset = calculateHQAnchorOffset(primaryPlanet.radius, hqStationRadius);
       hq.pos.x = primaryPlanet.pos.x + hqOffset.x;
@@ -1078,12 +1361,20 @@ export class SimulationEngine {
         hq.capturedReferenceFrame.center.x = primaryPlanet.pos.x;
         hq.capturedReferenceFrame.center.y = primaryPlanet.pos.y;
       }
+    } else if (hq && primaryPlanet && isRingHq) {
+      hq.pos.x = primaryPlanet.pos.x;
+      hq.pos.y = primaryPlanet.pos.y;
+      hq.velocity = { x: 0, y: 0 };
+      hq.isStationary = true;
+      if (hq.capturedReferenceFrame) {
+        hq.capturedReferenceFrame.localOffset.x = 0;
+        hq.capturedReferenceFrame.localOffset.y = 0;
+        hq.capturedReferenceFrame.center.x = primaryPlanet.pos.x;
+        hq.capturedReferenceFrame.center.y = primaryPlanet.pos.y;
+      }
     }
 
     globalState.ships = this.ships;
-
-    // Initial Sensor Sweep & Fog of War Evaluation
-    updateSensorsAndFogOfWar(this);
   }
 
   public isTargetInFriendlyVisualRange(pos: Vec2D): boolean {
@@ -1109,17 +1400,61 @@ export class SimulationEngine {
     return !this.isTargetInFriendlyVisualRange(ship.pos);
   }
 
-  public addLog(type: CombatLogEntry['type'], text: string, severity: CombatLogEntry['severity'] = 'info') {
+  public addLog(
+    type: CombatLogEntry['type'],
+    text: string,
+    severity: CombatLogEntry['severity'] = 'info',
+    isPlayerOwned?: boolean,
+    sourceFaction?: string
+  ) {
     const timeStr = new Date().toTimeString().split(' ')[0];
+
+    // Determine whether this log is produced by or directly targets a player-owned unit
+    let effectivePlayerOwned = isPlayerOwned;
+    if (effectivePlayerOwned === undefined) {
+      if (sourceFaction) {
+        effectivePlayerOwned = sourceFaction === 'FRIENDLY';
+      } else {
+        const lowerText = text.toLowerCase();
+        if (
+          text.includes('[HOSTILE]') ||
+          text.includes('[PIRATE]') ||
+          text.includes('[DEFENDER]') ||
+          text.includes('[NEUTRAL]') ||
+          lowerText.includes('pirate raider') ||
+          lowerText.includes('defender patrol') ||
+          lowerText.includes('hostile frigate') ||
+          lowerText.includes('hostile destroyer')
+        ) {
+          // If a player unit or HQ was targeted/damaged by hostile fire, player still receives the notification
+          if (
+            lowerText.includes('vanguard') ||
+            lowerText.includes('citadel') ||
+            lowerText.includes('friendly') ||
+            lowerText.includes('forge-builder') ||
+            lowerText.includes('hq')
+          ) {
+            effectivePlayerOwned = true;
+          } else {
+            effectivePlayerOwned = false;
+          }
+        } else {
+          effectivePlayerOwned = true;
+        }
+      }
+    }
+
     this.combatLogs.push({
       id: `log-${++this.logIdCounter}`,
       time: timeStr,
       type,
       text,
       severity,
+      isPlayerOwned: effectivePlayerOwned,
+      sourceFaction,
     });
-    if (this.combatLogs.length > 50) {
-      this.combatLogs.splice(0, this.combatLogs.length - 50);
+    if (this.combatLogs.length > 60) {
+      this.combatLogs.splice(0, this.combatLogs.length - 60);
     }
   }
 
@@ -1441,6 +1776,31 @@ export class SimulationEngine {
   }
 
   /**
+   * Resolves the star system descriptor that the given ship belongs to.
+   */
+  public getSystemForShip(ship: ShipEntity): StarSystemDescriptor | undefined {
+    if (ship.systemId && this.systems) {
+      const found = this.systems.find((s) => s.id === ship.systemId);
+      if (found) return found;
+    }
+    if (this.systems && this.systems.length > 0 && ship.pos) {
+      let closest = this.systems[0];
+      let minDistSq = Infinity;
+      for (const sys of this.systems) {
+        const cx = sys.center?.x ?? 0;
+        const cy = sys.center?.y ?? 0;
+        const dSq = (ship.pos.x - cx) ** 2 + (ship.pos.y - cy) ** 2;
+        if (dSq < minDistSq) {
+          minDistSq = dSq;
+          closest = sys;
+        }
+      }
+      return closest;
+    }
+    return undefined;
+  }
+
+  /**
    * Finds the host planetary body whose gravity well contains the given coordinates.
    * Orbital structures can only be designated within this boundary.
    */
@@ -1491,7 +1851,8 @@ export class SimulationEngine {
 
   public initiateJump(shipId: string, targetPos: Vec2D): { success: boolean; reason?: string } {
     const ship = this.ships.find((s) => s.id === shipId);
-    if (!ship || ship.hullState !== 'OPERATIONAL' || ship.isStationary) {
+    const canJumpStationary = ship && (ship.isCityShip || ship.role === 'CITY_SHIP' || (ship.role === 'HQ' && (ship.isYestiriRing || ship.factionId === 'YESTIRI' || ship.isCityShip)));
+    if (!ship || ship.hullState !== 'OPERATIONAL' || (ship.isStationary && !canJumpStationary)) {
       return { success: false, reason: 'Stationary, crippled, or invalid vessel' };
     }
 
@@ -1675,6 +2036,77 @@ export class SimulationEngine {
     this.addLog('ORDNANCE', `${ship.name}: Combat Stance set to ${stanceLabel}`, severity);
   }
 
+  public mountResearchOrbitalToShip(shipId: string, orbitalType: 'MILITARY_RESEARCH' | 'CIVIC_RESEARCH' | 'EXPANSION_CITADEL'): { success: boolean; reason?: string } {
+    const ship = this.ships.find((s) => s.id === shipId);
+    if (!ship) return { success: false, reason: 'Vessel not found' };
+    if (!ship.isCityShip && ship.role !== 'HQ' && (ship.role as string) !== 'CITY_SHIP') {
+      return { success: false, reason: 'Only City Ships and Mobile Citadel HQs can mount hull research orbitals.' };
+    }
+
+    ship.mountedResearchModules = ship.mountedResearchModules || [];
+    const maxModules = ship.maxMountedModules ?? 3;
+    if (ship.mountedResearchModules.length >= maxModules) {
+      return {
+        success: false,
+        reason: `Maximum mounted research modules reached (${maxModules}/${maxModules}). Research HQ Tier 1 Buildings Expansion to unlock +3 slots.`,
+      };
+    }
+
+    const costs = {
+      MILITARY_RESEARCH: { metallic: 50, organic: 25 },
+      CIVIC_RESEARCH: { metallic: 40, organic: 30 },
+      EXPANSION_CITADEL: { metallic: 80, organic: 45 },
+    }[orbitalType];
+
+    const hqRes = this.getHQResources();
+    if (hqRes.metallic < costs.metallic || hqRes.organic < costs.organic) {
+      return {
+        success: false,
+        reason: `Insufficient resources: requires ${costs.metallic} Metallic & ${costs.organic} Organic (Stockpile: ${Math.floor(hqRes.metallic)}M, ${Math.floor(hqRes.organic)}O)`,
+      };
+    }
+
+    hqRes.metallic -= costs.metallic;
+    hqRes.organic -= costs.organic;
+    ship.mountedResearchModules.push(orbitalType);
+    this.recalculateResearchScalars();
+
+    const nameMap = {
+      MILITARY_RESEARCH: 'Military Research Station (MRS)',
+      CIVIC_RESEARCH: 'Civic Research Outpost (CRO)',
+      EXPANSION_CITADEL: 'Expansion Research Citadel (EXC)',
+    };
+    this.addLog('LOGISTICS', `🛠️ Mounted ${nameMap[orbitalType]} onto ${ship.name} hull [Slots: ${ship.mountedResearchModules.length}/${maxModules}].`, 'success');
+    return { success: true };
+  }
+
+  public unmountResearchOrbitalFromShip(shipId: string, index?: number): { success: boolean; reason?: string } {
+    const ship = this.ships.find((s) => s.id === shipId);
+    if (!ship || !ship.mountedResearchModules || ship.mountedResearchModules.length === 0) {
+      return { success: false, reason: 'No mounted research modules to unmount' };
+    }
+
+    const targetIdx = index !== undefined && index >= 0 && index < ship.mountedResearchModules.length
+      ? index
+      : ship.mountedResearchModules.length - 1;
+
+    const removed = ship.mountedResearchModules.splice(targetIdx, 1)[0];
+
+    const refund = {
+      MILITARY_RESEARCH: { metallic: 50, organic: 25 },
+      CIVIC_RESEARCH: { metallic: 40, organic: 30 },
+      EXPANSION_CITADEL: { metallic: 80, organic: 45 },
+    }[removed] || { metallic: 0, organic: 0 };
+
+    const hqRes = this.getHQResources();
+    hqRes.metallic += refund.metallic;
+    hqRes.organic += refund.organic;
+    this.recalculateResearchScalars();
+
+    this.addLog('LOGISTICS', `♻️ Dismantled hull orbital module from ${ship.name}; refunded ${refund.metallic}M & ${refund.organic}O.`, 'info');
+    return { success: true };
+  }
+
   public setAggressiveDoctrine(shipId: string, doctrine: AggressiveDoctrine) {
     const ship = this.ships.find((s) => s.id === shipId);
     if (!ship || ship.hullState === 'DESTROYED') return;
@@ -1701,6 +2133,262 @@ export class SimulationEngine {
         : 'CARELESS [Threat-Agnostic: Mines nearest nodes under fire]';
     const severity = stance === 'TIMID' ? 'info' : 'warn';
     this.addLog('RESOURCE', `⛏️ ${ship.name}: Miner Stance set to ${desc}`, severity);
+  }
+
+  public toggleShipCleanup(shipId: string): boolean {
+    const ship = this.ships.find((s) => s.id === shipId);
+    if (!ship || ship.hullState === 'DESTROYED') return false;
+
+    ship.cleanupStance = !ship.cleanupStance;
+    if (ship.cleanupStance) {
+      ship.salvageState =
+        (ship.scrapUnits || 0) >= (ship.scrapUnitsMax || 3)
+          ? 'RETURNING_TO_DEPOSIT'
+          : 'SEEKING_SCRAP';
+      this.addLog(
+        'SALVAGE',
+        `♻️ ${ship.name}: Autonomous Battlefield Cleanup protocol ENGAGED. Scanning sector for debris...`,
+        'info'
+      );
+    } else {
+      ship.salvageState = 'IDLE';
+      ship.salvageTargetId = null;
+      this.addLog('SALVAGE', `⏸️ ${ship.name}: Cleanup protocol STANDBY.`, 'info');
+    }
+    return Boolean(ship.cleanupStance);
+  }
+
+  public orderDepositScrap(shipId: string): boolean {
+    const ship = this.ships.find((s) => s.id === shipId);
+    if (!ship || ship.hullState === 'DESTROYED') return false;
+    ship.salvageState = 'RETURNING_TO_DEPOSIT';
+    this.addLog('SALVAGE', `📦 ${ship.name}: Ordered to return and deposit scrap hold to nearest Depot.`, 'info');
+    return true;
+  }
+
+  public orderSalvageScrap(shipId: string, scrapId: string): boolean {
+    const ship = this.ships.find((s) => s.id === shipId);
+    const scrap = this.scraps.find((sc) => sc.id === scrapId);
+    if (!ship || !scrap || ship.hullState === 'DESTROYED') return false;
+
+    const currentUnits = ship.scrapUnits || 0;
+    const maxUnits = ship.scrapUnitsMax || 3;
+    if (maxUnits - currentUnits < scrap.units) {
+      this.addLog(
+        'SALVAGE',
+        `⚠️ ${ship.name}: Insufficient hold capacity to recover [${scrap.size} Scrap (${scrap.units}U)]. Available: ${maxUnits - currentUnits}/${maxUnits}U.`,
+        'warn'
+      );
+      return false;
+    }
+
+    ship.salvageTargetId = scrap.id;
+    ship.salvageState = 'SEEKING_SCRAP';
+    this.setSplineOrder(ship.id, { x: scrap.pos.x, y: scrap.pos.y });
+    this.addLog('SALVAGE', `🧲 ${ship.name}: Manual salvage vector plotted to [${scrap.size} Scrap - ${scrap.sourceShipName} wreck].`, 'info');
+    return true;
+  }
+
+  public updateScrapSalvageLogistics(dt: number): void {
+    const salvageBarges = this.ships.filter(
+      (s) => (s.role === 'SCRAP' || (s.class as string) === 'SALVAGER') && s.hullState !== 'DESTROYED'
+    );
+    if (salvageBarges.length === 0) return;
+
+    for (let i = 0; i < salvageBarges.length; i++) {
+      const barge = salvageBarges[i];
+      if (barge.hullState === 'DISABLED') continue;
+
+      if (barge.scrapUnitsMax === undefined) barge.scrapUnitsMax = 3;
+      if (barge.scrapUnits === undefined) barge.scrapUnits = 0;
+      if (!barge.scrapCargo) barge.scrapCargo = [];
+      if (barge.cleanupStance === undefined) barge.cleanupStance = false;
+      if (!barge.salvageState) barge.salvageState = 'IDLE';
+
+      const maxUnits = barge.scrapUnitsMax || 3;
+      const currentUnits = barge.scrapUnits || 0;
+      const availableCapacity = Math.max(0, maxUnits - currentUnits);
+
+      // Find nearest friendly Depot (Refinery or HQ or Starbase)
+      const friendlyDepots = this.ships.filter(
+        (s) =>
+          s.faction === barge.faction &&
+          s.hullState !== 'DESTROYED' &&
+          (s.role === 'HQ' || (s.role as string) === 'REFINERY' || (s.role as string) === 'STARBASE')
+      );
+      let nearestDepot: ShipEntity | null = null;
+      let minDepotDist = Infinity;
+      for (let dIdx = 0; dIdx < friendlyDepots.length; dIdx++) {
+        const d = friendlyDepots[dIdx];
+        const dist = Math.hypot(d.pos.x - barge.pos.x, d.pos.y - barge.pos.y);
+        if (dist < minDepotDist) {
+          minDepotDist = dist;
+          nearestDepot = d;
+        }
+      }
+
+      // 1. RETURNING TO DEPOSIT
+      if (barge.salvageState === 'RETURNING_TO_DEPOSIT' || (currentUnits >= maxUnits && nearestDepot)) {
+        barge.salvageState = 'RETURNING_TO_DEPOSIT';
+        if (!nearestDepot) continue;
+
+        const depotDist = Math.hypot(nearestDepot.pos.x - barge.pos.x, nearestDepot.pos.y - barge.pos.y);
+        const dockRadius = 140.0;
+
+        if (depotDist > dockRadius) {
+          // Transit towards depot
+          if (
+            !barge.splineActive ||
+            !barge.splineP1 ||
+            Math.hypot(barge.splineP1.x - nearestDepot.pos.x, barge.splineP1.y - nearestDepot.pos.y) > 50
+          ) {
+            this.setSplineOrder(barge.id, { x: nearestDepot.pos.x, y: nearestDepot.pos.y });
+          }
+        } else {
+          // Offload Scrap Cargo into Depot Resources
+          clearShipMovement(barge);
+          barge.velocity.x = 0;
+          barge.velocity.y = 0;
+
+          if (barge.scrapCargo && barge.scrapCargo.length > 0) {
+            let totalM = 0;
+            let totalO = 0;
+            for (let c = 0; c < barge.scrapCargo.length; c++) {
+              totalM += barge.scrapCargo[c].metallic || 0;
+              totalO += barge.scrapCargo[c].organic || 0;
+            }
+
+            const hq = this.getHQ();
+            if (hq && hq.resources) {
+              hq.resources.metallic += totalM;
+              hq.resources.organic += totalO;
+            }
+
+            const cargoCount = barge.scrapCargo.length;
+            barge.scrapCargo = [];
+            barge.scrapUnits = 0;
+
+            this.addLog(
+              'SALVAGE',
+              `♻️ ${barge.name}: Offloaded ${cargoCount} salvage wreck(s) to ${nearestDepot.name}! Recovered +${totalM.toLocaleString()} Metallic, +${totalO.toLocaleString()} Organic. Hold capacity cleared (0/3 U).`,
+              'success'
+            );
+          }
+
+          if (barge.cleanupStance) {
+            barge.salvageState = 'SEEKING_SCRAP';
+          } else {
+            barge.salvageState = 'IDLE';
+          }
+        }
+        continue;
+      }
+
+      // 2. SEEKING / COLLECTING SCRAP
+      if (barge.cleanupStance || barge.salvageState === 'SEEKING_SCRAP' || barge.salvageState === 'COLLECTING') {
+        if (availableCapacity <= 0) {
+          barge.salvageState = 'RETURNING_TO_DEPOSIT';
+          continue;
+        }
+
+        // Check if current targeted scrap is still valid and fits in capacity
+        let targetScrap: ScrapEntity | null = null;
+        if (barge.salvageTargetId) {
+          targetScrap = this.scraps.find((s) => s.id === barge.salvageTargetId) || null;
+          if (targetScrap && targetScrap.units > availableCapacity) {
+            targetScrap = null;
+            barge.salvageTargetId = null;
+          }
+        }
+
+        // Find closest fitting scrap in sector
+        if (!targetScrap && this.scraps.length > 0) {
+          let bestDist = Infinity;
+          for (let sIdx = 0; sIdx < this.scraps.length; sIdx++) {
+            const sc = this.scraps[sIdx];
+            if (sc.units <= availableCapacity) {
+              const d = Math.hypot(sc.pos.x - barge.pos.x, sc.pos.y - barge.pos.y);
+              if (d < bestDist) {
+                bestDist = d;
+                targetScrap = sc;
+              }
+            }
+          }
+          if (targetScrap) {
+            barge.salvageTargetId = targetScrap.id;
+          }
+        }
+
+        if (targetScrap) {
+          const distToScrap = Math.hypot(targetScrap.pos.x - barge.pos.x, targetScrap.pos.y - barge.pos.y);
+          const salvageRange = 100.0;
+
+          if (distToScrap > salvageRange) {
+            barge.salvageState = 'SEEKING_SCRAP';
+            barge.salvageBeamTimer = 0;
+            if (
+              !barge.splineActive ||
+              !barge.splineP1 ||
+              Math.hypot(barge.splineP1.x - targetScrap.pos.x, barge.splineP1.y - targetScrap.pos.y) > 30
+            ) {
+              this.setSplineOrder(barge.id, { x: targetScrap.pos.x, y: targetScrap.pos.y });
+            }
+          } else {
+            // In range: deploy tractor beam and collect
+            barge.salvageState = 'COLLECTING';
+            clearShipMovement(barge);
+            barge.velocity.x *= 0.85;
+            barge.velocity.y *= 0.85;
+
+            barge.salvageBeamTimer = (barge.salvageBeamTimer || 0) + dt;
+            if (barge.salvageBeamTimer >= 1.2) {
+              // Complete salvage operation
+              barge.scrapCargo.push({
+                id: targetScrap.id,
+                size: targetScrap.size,
+                units: targetScrap.units,
+                metallic: targetScrap.metallic,
+                organic: targetScrap.organic,
+                sourceShipName: targetScrap.sourceShipName,
+              });
+              barge.scrapUnits = (barge.scrapUnits || 0) + targetScrap.units;
+
+              // Remove scrap from world simulation
+              const sIdx = this.scraps.findIndex((s) => s.id === targetScrap!.id);
+              if (sIdx !== -1) {
+                this.scraps.splice(sIdx, 1);
+              }
+
+              this.addLog(
+                'SALVAGE',
+                `🧲 ${barge.name}: Harvested [${targetScrap.size} Debris - ${targetScrap.units}U] (${targetScrap.sourceShipName}: +${targetScrap.metallic.toLocaleString()} M, +${targetScrap.organic.toLocaleString()} O). Hold: ${barge.scrapUnits}/3 U.`,
+                'success'
+              );
+
+              barge.salvageBeamTimer = 0;
+              barge.salvageTargetId = null;
+
+              if (barge.scrapUnits >= maxUnits) {
+                barge.salvageState = 'RETURNING_TO_DEPOSIT';
+              } else {
+                barge.salvageState = 'SEEKING_SCRAP';
+              }
+            }
+          }
+        } else {
+          // No fitting scrap available in range
+          if (barge.scrapUnits > 0) {
+            barge.salvageState = 'RETURNING_TO_DEPOSIT';
+          } else {
+            barge.salvageState = 'IDLE';
+          }
+        }
+      }
+    }
+  }
+
+  public updateSalvageBarges(dt: number): void {
+    this.updateScrapSalvageLogistics(dt);
   }
 
   public toggleAutoFire(shipId?: string) {
@@ -2032,6 +2720,7 @@ export class SimulationEngine {
     this.updateBuilderLogic(dt);
     this.updateRepairBays(dt);
     this.updateOrbitalRefineries(dt);
+    this.updateSalvageBarges(dt);
     this.updateMissileBatteries(dt);
 
     // 30Hz Offensive Target Acquisition and Salvo Execution Pipeline across all player vessels
@@ -2043,6 +2732,27 @@ export class SimulationEngine {
       const s = this.ships[i];
       if (s.faction === 'HOSTILE' && s.hullState === 'OPERATIONAL' && s.role !== 'MINER' && s.role !== 'BUILDER') {
         updateShipCombatTick(s, combatState, dt);
+      }
+    }
+
+    // Pre-index alive ships and missiles for instant O(1) lookups across all defense, combat, and fleet loops
+    const liveShipMap = new Map<string, ShipEntity>();
+    for (let i = 0; i < this.ships.length; i++) {
+      const s = this.ships[i];
+      if (s.hullState !== 'DESTROYED') {
+        liveShipMap.set(s.id, s);
+      }
+    }
+
+    const liveMissileMap = new Map<string, MissileEntity>();
+    const activeHostileMissiles: MissileEntity[] = [];
+    for (let i = 0; i < this.missiles.length; i++) {
+      const m = this.missiles[i];
+      if (m.alive) {
+        liveMissileMap.set(m.id, m);
+        if (!m.isSpoofed && m.status !== 'SPOOFED' && m.status !== 'OVERFLIGHT' && !m.fuelExhausted) {
+          activeHostileMissiles.push(m);
+        }
       }
     }
 
@@ -2072,17 +2782,22 @@ export class SimulationEngine {
       }
 
       // Hard Sublight Perimeter Interdiction
-      const currentSys = this.solarSystem;
-      const sysCenter = currentSys?.star?.pos || { x: 0, y: 0 };
-      const boundaryR = (currentSys as any)?.arenaRadius || 130000;
+      const sysDesc = this.getSystemForShip(ship);
+      const sysCenter = sysDesc?.center || sysDesc?.solarSystem?.star?.pos || { x: 0, y: 0 };
+      const boundaryR = sysDesc?.systemBoundaryRadius || sysDesc?.deepSpaceBoundaryRadius || (sysDesc?.solarSystem as any)?.arenaRadius || 280000;
       checkSublightPerimeterInterdiction(ship, sysCenter, boundaryR, (msg) => {
         if (ship.faction === 'FRIENDLY') {
           this.addLog('NAV', msg, 'warn');
         }
       });
 
+      // Novan tactical micro-jump kinematic evolution
+      if (ship.microJumpState && ship.microJumpState !== 'IDLE') {
+        updateMicroJumpKinematics(ship, 1);
+      }
+
       // 1. Kinematic Linear-Quadratic Burns & Wrapped-Radian Slew Traversal
-      if (ship.splineActive && ship.hullState === 'OPERATIONAL') {
+      if (ship.splineActive && (ship.hullState === 'OPERATIONAL' || ship.hullState === 'CRIPPLED')) {
         updateShipMovementTick(ship, dt, (arrivedShip) => {
           if (arrivedShip.faction === 'HOSTILE') {
             if (arrivedShip.npcPatrolState) {
@@ -2177,8 +2892,13 @@ export class SimulationEngine {
       }
 
       // 3. Defense Grid against Pre-Filtered Threats
-      // In PASSIVE stance, weapons are on hold (never fire). In DEFENSIVE and AGGRESSIVE stances, fires defensive ammo (CM and PDPLA).
-      if (ship.hullState === 'OPERATIONAL' && ship.combatStance !== 'PASSIVE') {
+      // In PASSIVE stance or when DISABLED (HP <= 12.5% max HP / 50% cripple bar), defenses are offline.
+      const defensesActive =
+        (ship.hullState === 'OPERATIONAL' ||
+          (ship.hullState === 'CRIPPLED' && ship.hullHp > 0.125 * ship.hullMax)) &&
+        ship.combatStance !== 'PASSIVE';
+
+      if (defensesActive) {
         if (ship.pdplaBeamTimer > 0) {
           ship.pdplaBeamTimer -= dt;
           if (ship.pdplaBeamTimer <= 0) {
@@ -2187,8 +2907,10 @@ export class SimulationEngine {
         }
 
         const myThreats = threatBuckets.get(ship.id) || [];
-        const effectiveCMRange = BASE_TACTICAL_RANGES.counterMissileRangeKm * (this.combatModifiers.cmRangeMult ?? 1.0);
-        const effectivePDRange = BASE_TACTICAL_RANGES.pointDefenseRangeKm * (this.combatModifiers.pdRangeMult ?? 1.0);
+        const isRingCitadel = Boolean(ship.isRingStructure || ship.isGarnRing || ship.hqType === 'GARN_RING_CITADEL');
+        const ringOuterMargin = isRingCitadel ? (ship.ringOuterRadius || ship.radius || 1100) : 0;
+        const effectiveCMRange = (ship.counterMissileRange ?? BASE_TACTICAL_RANGES.counterMissileRangeKm) * (this.combatModifiers.cmRangeMult ?? 1.0);
+        const effectivePDRange = (ship.pdplaRange ?? BASE_TACTICAL_RANGES.pointDefenseRangeKm) * (this.combatModifiers.pdRangeMult ?? 1.0);
         const pdplaRangeSq = effectivePDRange * effectivePDRange;
         const cmMaxRange = effectiveCMRange;
         const cmMaxSq = cmMaxRange * cmMaxRange;
@@ -2202,7 +2924,9 @@ export class SimulationEngine {
         // Priority 1: Inbound threats targeting this ship directly
         for (const threat of myThreats) {
           if (!threat.alive || threat.isSpoofed || threat.status === 'SPOOFED' || threat.status === 'OVERFLIGHT' || threat.fuelExhausted) continue;
-          const dSq = distSq(threat.pos, ship.pos);
+          const rawD = Math.hypot(threat.pos.x - ship.pos.x, threat.pos.y - ship.pos.y);
+          const effD = Math.max(0, rawD - ringOuterMargin);
+          const dSq = effD * effD;
           if (dSq <= cmMaxSq && dSq > cmMinSq) {
             chosenCmThreat = threat;
             cmDefendedShip = ship;
@@ -2213,21 +2937,14 @@ export class SimulationEngine {
         // Priority 2: Fleet Defense Umbrella - Intercept hostile missiles targeting ANY friendly hull within this ship's CM range
         if (!chosenCmThreat && (ship.combatStance === 'DEFENSIVE' || ship.combatStance === 'AGGRESSIVE')) {
           let bestDistSq = Infinity;
-          const misLen = this.missiles.length;
-          const shpLen = this.ships.length;
-          for (let mIdx = 0; mIdx < misLen; mIdx++) {
-            const m = this.missiles[mIdx];
-            if (m.alive && !m.isSpoofed && m.status !== 'SPOOFED' && m.status !== 'OVERFLIGHT' && !m.fuelExhausted && m.faction !== ship.faction) {
-              let friendlyHull: ShipEntity | null = null;
-              for (let sIdx = 0; sIdx < shpLen; sIdx++) {
-                const f = this.ships[sIdx];
-                if (f.id === m.targetId && f.faction === ship.faction && f.hullState !== 'DESTROYED') {
-                  friendlyHull = f;
-                  break;
-                }
-              }
-              if (friendlyHull) {
-                const dSq = distSq(m.pos, ship.pos);
+          for (let mIdx = 0; mIdx < activeHostileMissiles.length; mIdx++) {
+            const m = activeHostileMissiles[mIdx];
+            if (m.faction !== ship.faction) {
+              const friendlyHull = liveShipMap.get(m.targetId);
+              if (friendlyHull && friendlyHull.faction === ship.faction) {
+                const rawD = Math.hypot(m.pos.x - ship.pos.x, m.pos.y - ship.pos.y);
+                const effD = Math.max(0, rawD - ringOuterMargin);
+                const dSq = effD * effD;
                 if (dSq <= cmMaxSq && dSq > cmMinSq && dSq < bestDistSq) {
                   bestDistSq = dSq;
                   chosenCmThreat = m;
@@ -2293,7 +3010,7 @@ export class SimulationEngine {
         // FLEET DEFENSIVE UMBRELLA:
         // When in "Defensive Stance" (Key '1'), ships with active PD lasers fire on ANY hostile missile
         // that enters their PD range circle, regardless of whether that ship is the missile's designated target.
-        // Escorts prioritize the closest missile to any friendly hull within range.
+        // Escorts prioritize the closest missile within range.
         if (!ship.pdplaOverheated && ship.pdplaCooldown <= 0) {
           let chosenThreat: MissileEntity | null = null;
           let defendedShip: ShipEntity | null = null;
@@ -2301,48 +3018,32 @@ export class SimulationEngine {
           if (ship.combatStance === 'DEFENSIVE') {
             // Find all hostile, alive, non-spoofed missiles within this ship's PD range circle
             let bestThreat: MissileEntity | null = null;
-            let minFriendlyDistSq = Infinity;
-            const misLen = this.missiles.length;
-            const shpLen = this.ships.length;
+            let minThreatDistSq = Infinity;
 
-            for (let mIdx = 0; mIdx < misLen; mIdx++) {
-              const m = this.missiles[mIdx];
-              if (m.alive && !m.isSpoofed && m.status !== 'SPOOFED' && m.status !== 'OVERFLIGHT' && !m.fuelExhausted && m.faction !== ship.faction) {
-                const distToEscortSq = distSq(m.pos, ship.pos);
-                if (distToEscortSq <= pdplaRangeSq) {
-                  // Prioritize the closest missile to ANY friendly hull within range
-                  let closestFriendlySq = Infinity;
-                  for (let fIdx = 0; fIdx < shpLen; fIdx++) {
-                    const f = this.ships[fIdx];
-                    if (f.faction !== ship.faction || f.hullState === 'DESTROYED') continue;
-                    const dfSq = distSq(m.pos, f.pos);
-                    if (dfSq < closestFriendlySq) {
-                      closestFriendlySq = dfSq;
-                    }
-                  }
-                  if (closestFriendlySq < minFriendlyDistSq) {
-                    minFriendlyDistSq = closestFriendlySq;
-                    bestThreat = m;
-                  }
+            for (let mIdx = 0; mIdx < activeHostileMissiles.length; mIdx++) {
+              const m = activeHostileMissiles[mIdx];
+              if (m.faction !== ship.faction) {
+                const rawD = Math.hypot(m.pos.x - ship.pos.x, m.pos.y - ship.pos.y);
+                const effD = Math.max(0, rawD - ringOuterMargin);
+                const distToEscortSq = effD * effD;
+                if (distToEscortSq <= pdplaRangeSq && distToEscortSq < minThreatDistSq) {
+                  minThreatDistSq = distToEscortSq;
+                  bestThreat = m;
                 }
               }
             }
 
             if (bestThreat) {
               chosenThreat = bestThreat;
-              for (let sIdx = 0; sIdx < shpLen; sIdx++) {
-                const s = this.ships[sIdx];
-                if (s.id === chosenThreat.targetId) {
-                  defendedShip = s;
-                  break;
-                }
-              }
+              defendedShip = liveShipMap.get(chosenThreat.targetId) || null;
             }
           } else {
             // Other stances (e.g. AGGRESSIVE): Target hostile missiles directly threatening self
             for (const threat of myThreats) {
               if (!threat.alive || threat.isSpoofed || threat.status === 'SPOOFED' || threat.status === 'OVERFLIGHT' || threat.fuelExhausted) continue;
-              const dSq = distSq(threat.pos, ship.pos);
+              const rawD = Math.hypot(threat.pos.x - ship.pos.x, threat.pos.y - ship.pos.y);
+              const effD = Math.max(0, rawD - ringOuterMargin);
+              const dSq = effD * effD;
               if (dSq <= pdplaRangeSq) {
                 chosenThreat = threat;
                 defendedShip = ship;
@@ -2426,7 +3127,11 @@ export class SimulationEngine {
         ship.hullState === 'OPERATIONAL'
       ) {
         ship.supportRadius = 200.0;
-        ship.supportActiveTargets = [];
+        if (!ship.supportActiveTargets) {
+          ship.supportActiveTargets = [];
+        } else {
+          ship.supportActiveTargets.length = 0;
+        }
         const aoeRadiusSq = 200.0 * 200.0;
 
         // THE 70% MOVEMENT PENALTY:
@@ -2480,22 +3185,37 @@ export class SimulationEngine {
 
               // 3. Fleet Repair Ship: Restores Hull HP to nearby ships at 10 HP/sec (only heals Hull, does not heal Shields)
               else if (ship.role === 'REPAIR') {
-                if (recipient.hullHp < recipient.maxRepairableHull) {
+                const maxRep = recipient.maxRepairableHull ?? recipient.hullMax;
+                if (recipient.hullHp < maxRep) {
                   const hpAmount = Math.min(
                     dt * 10.0 * rateMultiplier,
-                    recipient.maxRepairableHull - recipient.hullHp
+                    maxRep - recipient.hullHp
                   );
                   if (hpAmount > 0) {
                     recipient.hullHp += hpAmount;
-                    // When repairing crippled hull, also stabilize cripple bar
-                    if (recipient.hullState === 'CRIPPLED') {
-                      recipient.crippleBar = Math.min(
-                        recipient.crippleBarMax,
-                        recipient.crippleBar + hpAmount * 0.8
+                    recipient.crippleBar = Math.min(
+                      recipient.crippleBarMax,
+                      recipient.hullHp
+                    );
+
+                    // Transition DISABLED -> CRIPPLED (HP > 12.5% max HP)
+                    if (recipient.hullState === 'DISABLED' && recipient.hullHp > 0.125 * recipient.hullMax) {
+                      recipient.hullState = 'CRIPPLED';
+                      this.addLog(
+                        'CRIPPLE',
+                        `🛠️ ${recipient.name}: Systems reactivated! Transitioned from DISABLED to CRIPPLED.`,
+                        'info'
                       );
-                      if (recipient.hullHp >= recipient.crippleBarMax * 0.5) {
-                        recipient.hullState = 'OPERATIONAL';
-                      }
+                    }
+
+                    // Transition CRIPPLED -> OPERATIONAL (HP > 25% max HP)
+                    if (recipient.hullState === 'CRIPPLED' && recipient.hullHp > 0.25 * recipient.hullMax) {
+                      recipient.hullState = 'OPERATIONAL';
+                      this.addLog(
+                        'CRIPPLE',
+                        `🛠️ ${recipient.name}: Hull integrity restored above 25%. Vessel is OPERATIONAL!`,
+                        'success'
+                      );
                     }
                     isServicing = true;
                   }
@@ -2514,8 +3234,10 @@ export class SimulationEngine {
     // Apply basic avoidance scripts when ships move (avoid touching/colliding)
     this.applyShipCollisionAvoidance(dt);
 
-    // Dynamic Sensor Visibility Pass (FOW Entity Evaluation)
-    updateSensorVisibility(this);
+    // Salvage Barge Battlefield Cleanup & Scrap Recovery Logistics
+    this.updateScrapSalvageLogistics(dt);
+
+    // Dynamic Sensor Visibility Pass is consolidated in updateSensorsAndFogOfWar at the beginning of the tick
 
     // Update Counter-Missiles
     for (const cm of this.counterMissiles) {
@@ -2523,13 +3245,19 @@ export class SimulationEngine {
       const step = cm.speed * dt;
       cm.distanceTraveled = (cm.distanceTraveled || 0) + step;
 
-      // Exhaust Trail Sampling
+      // Exhaust Trail Sampling with zero-allocation in-place object reuse
       cm.trailSampleTimer = (cm.trailSampleTimer || 0) + dt;
       if (cm.trailSampleTimer >= 0.025) {
         cm.trailSampleTimer = 0;
         if (!cm.trail) cm.trail = [];
-        cm.trail.push({ ...cm.pos });
-        if (cm.trail.length > 12) cm.trail.shift();
+        if (cm.trail.length < 12) {
+          cm.trail.push({ x: cm.pos.x, y: cm.pos.y });
+        } else {
+          const oldest = cm.trail.shift()!;
+          oldest.x = cm.pos.x;
+          oldest.y = cm.pos.y;
+          cm.trail.push(oldest);
+        }
       }
 
       // Check max range limit (counter-missiles keep flying until max range when they miss or target dies)
@@ -2538,10 +3266,10 @@ export class SimulationEngine {
         continue;
       }
 
-      const targetM = this.missiles.find((m) => m.id === cm.targetMissileId && m.alive);
+      const targetM = liveMissileMap.get(cm.targetMissileId);
 
       // If target warhead was already destroyed or this CM has already missed, keep flying in current heading to max range
-      if (!targetM || cm.isMissed) {
+      if (!targetM || !targetM.alive || cm.isMissed) {
         cm.pos.x += Math.cos(cm.heading) * step;
         cm.pos.y += Math.sin(cm.heading) * step;
         continue;
@@ -2621,19 +3349,23 @@ export class SimulationEngine {
         m.pos.x += Math.cos(driftHeading) * step;
         m.pos.y += Math.sin(driftHeading) * step;
 
-        // Faint residual smoke puffs
+        // Faint residual smoke puffs with zero-allocation object reuse
         m.trailSampleTimer = (m.trailSampleTimer || 0) + dt;
         if (m.trailSampleTimer >= 0.035) {
           m.trailSampleTimer = 0;
           if (!m.trail) m.trail = [];
-          m.trail.push({ ...m.pos });
-          if (m.trail.length > 8) {
-            m.trail.shift();
+          if (m.trail.length < 8) {
+            m.trail.push({ x: m.pos.x, y: m.pos.y });
+          } else {
+            const oldest = m.trail.shift()!;
+            oldest.x = m.pos.x;
+            oldest.y = m.pos.y;
+            m.trail.push(oldest);
           }
         }
 
         // Direct collision check during unpowered drift
-        const target = this.ships.find((s) => s.id === m.targetId);
+        const target = liveShipMap.get(m.targetId);
         if (target && target.hullState !== 'DESTROYED') {
           const dx = target.pos.x - m.pos.x;
           const dy = target.pos.y - m.pos.y;
@@ -2671,14 +3403,18 @@ export class SimulationEngine {
         m.pos.x += vx * step;
         m.pos.y += vy * step;
 
-        // Trail sampling along runaway flight path
+        // Trail sampling along runaway flight path with zero-allocation object reuse
         m.trailSampleTimer = (m.trailSampleTimer || 0) + dt;
         if (m.trailSampleTimer >= 0.025) {
           m.trailSampleTimer = 0;
           if (!m.trail) m.trail = [];
-          m.trail.push({ ...m.pos });
-          if (m.trail.length > 20) {
-            m.trail.shift();
+          if (m.trail.length < 20) {
+            m.trail.push({ x: m.pos.x, y: m.pos.y });
+          } else {
+            const oldest = m.trail.shift()!;
+            oldest.x = m.pos.x;
+            oldest.y = m.pos.y;
+            m.trail.push(oldest);
           }
         }
 
@@ -2710,9 +3446,13 @@ export class SimulationEngine {
         if (m.trailSampleTimer >= 0.025) {
           m.trailSampleTimer = 0;
           if (!m.trail) m.trail = [];
-          m.trail.push({ ...m.pos });
-          if (m.trail.length > 20) {
-            m.trail.shift();
+          if (m.trail.length < 20) {
+            m.trail.push({ x: m.pos.x, y: m.pos.y });
+          } else {
+            const oldest = m.trail.shift()!;
+            oldest.x = m.pos.x;
+            oldest.y = m.pos.y;
+            m.trail.push(oldest);
           }
         }
 
@@ -2729,7 +3469,7 @@ export class SimulationEngine {
         continue;
       }
 
-      const target = this.ships.find((s) => s.id === m.targetId);
+      const target = liveShipMap.get(m.targetId);
       if (!target || target.hullState === 'DESTROYED') {
         // Target lost or destroyed: lose tracking and detonate 1.0s later
         m.underPower = false;
@@ -2740,7 +3480,7 @@ export class SimulationEngine {
 
       // FIRE_TO_DISABLE protocol: If target is crippled/disabled, in-flight rounds self-destruct immediately
       if (target.hullState === 'CRIPPLED') {
-        const firingShip = this.ships.find((s) => s.id === m.sourceShipId);
+        const firingShip = liveShipMap.get(m.sourceShipId);
         const isDisable = firingShip ? firingShip.aggressiveDoctrine === 'DISABLE' : m.doctrine === 'DISABLE';
         if (isDisable) {
           m.alive = false;
@@ -2777,8 +3517,14 @@ export class SimulationEngine {
         if (m.trailSampleTimer >= 0.03) {
           m.trailSampleTimer = 0;
           if (!m.trail) m.trail = [];
-          m.trail.push({ ...m.pos });
-          if (m.trail.length > 20) m.trail.shift();
+          if (m.trail.length < 20) {
+            m.trail.push({ x: m.pos.x, y: m.pos.y });
+          } else {
+            const oldest = m.trail.shift()!;
+            oldest.x = m.pos.x;
+            oldest.y = m.pos.y;
+            m.trail.push(oldest);
+          }
         }
 
         if (m.ejectionTimer <= 0) {
@@ -2896,14 +3642,19 @@ export class SimulationEngine {
       m.pos.x += dx * inv * step;
       m.pos.y += dy * inv * step;
 
-      // Trail Sampling
+      // Trail Sampling with zero-allocation object reuse
       m.trailSampleTimer = (m.trailSampleTimer || 0) + dt;
       if (m.trailSampleTimer >= 0.03) {
         m.trailSampleTimer = 0;
         if (!m.trail) m.trail = [];
-        m.trail.push(this.getMissileRenderPos(m, target));
-        if (m.trail.length > 16) {
-          m.trail.shift();
+        const rPos = this.getMissileRenderPos(m, target);
+        if (m.trail.length < 16) {
+          m.trail.push({ x: rPos.x, y: rPos.y });
+        } else {
+          const oldest = m.trail.shift()!;
+          oldest.x = rPos.x;
+          oldest.y = rPos.y;
+          m.trail.push(oldest);
         }
       }
     }
@@ -2969,6 +3720,7 @@ export class SimulationEngine {
     }
 
     // Advance research synthesis matrix
+    const hqEntity = this.getHQ();
     this.researchManager.update(
       dt,
       this.researchStations,
@@ -2980,6 +3732,13 @@ export class SimulationEngine {
           `🚀 Protocol active: [${node.name}] (${node.code})! Stat hooks and blueprint authorizations updated.`,
           'info'
         );
+      },
+      hqEntity?.resources,
+      (m, o) => {
+        if (hqEntity && hqEntity.resources) {
+          hqEntity.resources.metallic = Math.max(0, hqEntity.resources.metallic - m);
+          hqEntity.resources.organic = Math.max(0, hqEntity.resources.organic - o);
+        }
       }
     );
 
@@ -3053,8 +3812,22 @@ export class SimulationEngine {
   }
 
   public applyHitToShip(ship: ShipEntity, damage: number) {
-    if (ship.hullState === 'DESTROYED') return;
+    if (!ship || ship.hullState === 'DESTROYED') return;
     if (ship.jumpState === 'TRANSIT' || ship.jumpState === 'IN_TRANSIT') return; // Invulnerable while in active subspace warp transit
+
+    // Safety checks for null/undefined/NaN stats
+    if (!ship.hullMax || isNaN(ship.hullMax) || ship.hullMax <= 0) {
+      ship.hullMax = 500.0;
+    }
+    if (ship.hullHp === undefined || isNaN(ship.hullHp)) {
+      ship.hullHp = (ship as any).hull !== undefined && !isNaN((ship as any).hull) ? (ship as any).hull : ship.hullMax;
+    }
+    if (ship.shieldHpMax === undefined || isNaN(ship.shieldHpMax)) {
+      ship.shieldHpMax = 1000.0;
+    }
+    if (ship.shieldHp === undefined || isNaN(ship.shieldHp)) {
+      ship.shieldHp = (ship as any).shield !== undefined && !isNaN((ship as any).shield) ? (ship as any).shield : ship.shieldHpMax;
+    }
 
     // Headquarters Entity: Infinite health (invulnerable for now)
     if (ship.role === 'HQ') {
@@ -3065,34 +3838,154 @@ export class SimulationEngine {
 
     this.benchmark.totalMissileHits++;
 
+    // Spool disruption check (Novan has Disruption Immunity)
+    const isNovan = ship.factionId === 'NOVAN' || this.playerFaction === 'NOVAN' || (ship as any).isNovan;
+    if (!isNovan && ship.microJumpState === 'SPOOLING') {
+      ship.microJumpState = 'IDLE';
+      ship.microJumpSpoolRemaining = 0;
+      ship.microJumpTarget = undefined;
+      this.addLog('TACTICAL', `${ship.name}: Micro-jump spool disrupted by incoming weapons fire!`, 'warn');
+    }
+
     // Layer 4: Thermal Deflector Shields
     if (!ship.shieldOverheated && ship.shieldHp > 0) {
-      ship.shieldHp -= damage;
-      ship.shieldHeat += damage * 0.28;
-      if (ship.shieldHeat >= ship.shieldHeatMax || ship.shieldHp <= 0) {
+      let effectiveDamage = damage;
+      if ((ship.shieldHardeningTimer ?? 0) > 0) {
+        effectiveDamage *= 0.80; // Novan Hardening 20% flat mitigation
+      }
+      ship.shieldHp = Math.max(0, ship.shieldHp - effectiveDamage);
+      ship.shieldHeat += effectiveDamage * 0.28;
+      if (ship.currentShield !== undefined) {
+        ship.currentShield = ship.shieldHp;
+      }
+      if (ship.shieldHeat >= (ship.shieldHeatMax || 100) || ship.shieldHp <= 0) {
         ship.shieldOverheated = true;
         ship.shieldHp = 0;
+        if (ship.currentShield !== undefined) ship.currentShield = 0;
         ship.shieldCooldownTimer = 2.5 + Math.random() * 2.0;
         this.addLog('SHIELD_DROP', `${ship.name}: Shield Radiators saturated at 100%! Emergency cooling dump forced.`, 'crit');
       } else {
-        this.addLog('ORDNANCE', `${ship.name}: Thermal Shield absorbed ${damage} dmg. Radiator heat: ${Math.round(ship.shieldHeat)}%`, 'warn');
+        this.addLog('ORDNANCE', `${ship.name}: Thermal Shield absorbed ${Math.round(effectiveDamage)} dmg. Radiator heat: ${Math.round(ship.shieldHeat)}%`, 'warn');
       }
       return;
     }
 
-    // Layer 5: Hull Lifecycle
-    if (ship.hullState === 'OPERATIONAL') {
-      ship.hullHp -= damage;
-      this.addLog('ORDNANCE', `${ship.name}: CRITICAL - Direct hull impact (${damage} dmg)! Hull: ${Math.round(ship.hullHp)}/${ship.hullMax}`, 'crit');
-      if (ship.hullHp <= 0) {
-        ship.hullHp = 0;
-        ship.hullState = 'CRIPPLED';
-        ship.splineActive = false;
-        this.addLog('CRIPPLE', `${ship.name}: HULL CRIPPLED. SAR cold-gas thrusters deployed. Derelict halting.`, 'crit');
+    // Layer 5: Hull Lifecycle (Crippled at 25%, Disabled at 12.5%, Permanent Frame Damage, Scrap on Destruction)
+    if (!ship.firstDamageTime) {
+      ship.firstDamageTime = this.simulationTime;
+    }
 
-        // FIRE_TO_DISABLE protocol:
-        // Any in-flight missiles targeting this newly crippled ship from ships configured with DISABLE doctrine
-        // immediately trigger self-destruct!
+    ship.hullHp = Math.max(0, ship.hullHp - damage);
+    ship.hull = ship.hullHp;
+    const crippleThreshold = 0.25 * ship.hullMax;
+    const disabledThreshold = 0.125 * ship.hullMax;
+    ship.crippleBarMax = crippleThreshold;
+    ship.crippleBar = Math.min(crippleThreshold, Math.max(0, ship.hullHp));
+
+    this.addLog(
+      'ORDNANCE',
+      `${ship.name}: CRITICAL - Direct hull impact (${damage} dmg)! Hull: ${Math.round(ship.hullHp)}/${ship.hullMax}`,
+      'crit'
+    );
+
+    // 1. DESTROYED (0 HP)
+    if (ship.hullHp <= 0) {
+      ship.hullHp = 0;
+      ship.hullState = 'DESTROYED';
+      ship.splineActive = false;
+      ship.velocity = { x: 0, y: 0 };
+
+      // Scrap Generation Calculation based on combat attrition duration
+      const combatDuration = Math.max(0, this.simulationTime - (ship.firstDamageTime ?? this.simulationTime));
+      // Fast destruction (<= 3s): 10% scrap ratio (reactor catastrophe); Slow attrition (>= 30s): 50% scrap ratio
+      const scrapRatio =
+        combatDuration <= 3.0
+          ? 0.10
+          : combatDuration >= 30.0
+          ? 0.50
+          : 0.10 + Math.min(1.0, (combatDuration - 3.0) / 27.0) * 0.40;
+
+      // Scrap Size Classification (Light = 1 unit, Medium = 2 units, Heavy = 3 units)
+      const heavyRoles: string[] = ['CARRIER', 'DREADNOUGHT', 'DN', 'CITY_SHIP', 'LIAAL_HEAVY', 'SY_HEAVY', 'BASTION', 'HQ'];
+      const mediumRoles: string[] = ['HEAVY_CRUISER', 'CH', 'BATTLECRUISER', 'BC', 'BATTLESHIP', 'BB', 'LIAAL_MEDIUM', 'SY_MEDIUM'];
+
+      const scrapSize: ScrapSize = heavyRoles.includes(ship.role)
+        ? 'HEAVY'
+        : mediumRoles.includes(ship.role)
+        ? 'MEDIUM'
+        : 'LIGHT';
+      const scrapUnits: number = scrapSize === 'HEAVY' ? 3 : scrapSize === 'MEDIUM' ? 2 : 1;
+
+      // Resource Value Calculation
+      const proto = (SHIP_PROTOTYPES as any)[ship.role] || (STRUCTURE_CATALOG as any)[ship.role];
+      const baseCostM = proto?.costMetallic ?? proto?.costM ?? (scrapUnits === 3 ? 28000 : scrapUnits === 2 ? 10000 : 2500);
+      const baseCostO = proto?.costOrganic ?? proto?.costO ?? (scrapUnits === 3 ? 6500 : scrapUnits === 2 ? 3000 : 800);
+
+      const scrapMetallic = Math.max(25, Math.round(baseCostM * scrapRatio));
+      const scrapOrganic = Math.max(10, Math.round(baseCostO * scrapRatio));
+
+      const scrapEntity: ScrapEntity = {
+        id: `scrap-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        pos: { x: ship.pos.x, y: ship.pos.y },
+        heading: Math.random() * Math.PI * 2,
+        rotationSpeed: (Math.random() - 0.5) * 0.4,
+        size: scrapSize,
+        units: scrapUnits,
+        metallic: scrapMetallic,
+        organic: scrapOrganic,
+        sourceShipName: ship.name,
+        sourceRole: ship.role,
+        createdTime: this.simulationTime,
+        systemId: ship.systemId,
+      };
+      this.scraps.push(scrapEntity);
+
+      this.addLog(
+        'DESTROY',
+        `💥 ${ship.name}: FRAME SHATTERED. Spawned [${scrapSize} Scrap - ${scrapUnits} unit(s)] (${Math.round(scrapRatio * 100)}% recovery yield: +${scrapMetallic.toLocaleString()} Metallic, +${scrapOrganic.toLocaleString()} Organic).`,
+        'crit'
+      );
+
+      // FIRE_TO_DISABLE protocol: self-destruct missiles targeting newly destroyed vessel
+      for (const m of this.missiles) {
+        if (m.alive && m.targetId === ship.id) {
+          const firingShip = this.ships.find((s) => s.id === m.sourceShipId);
+          const isDisable = firingShip ? firingShip.aggressiveDoctrine === 'DISABLE' : m.doctrine === 'DISABLE';
+          if (isDisable) {
+            m.alive = false;
+            this.triggerSelfDestruct(m.pos, `[SELF-DESTRUCT: ${ship.name} DESTROYED]`);
+          }
+        }
+      }
+
+      if (ship.isStructure) {
+        this.updateResearchStationsCount();
+      }
+
+      if (ship.role === 'MINER' && (ship.cargoOre || 0) > 0) {
+        this.addLog('TACTICAL', `💥 ${ship.name} DESTROYED: ${Math.round(ship.cargoOre!)} Ore cargo permanently lost in vacuum!`, 'crit');
+        ship.cargoOre = 0;
+      }
+
+      if (ship.id === 'vanguard-01') {
+        this.vanguardRespawnTimer = 1.0;
+        this.addLog('TACTICAL', '⚠️ Vanguard-01 destroyed! Automated combat test protocol: Deploying new Vanguard Cruiser at primary coordinates (-220, 80) in 1.0s...', 'warn');
+      }
+
+      this.purgeDestroyedEntities();
+      return;
+    }
+
+    // 2. DISABLED (HP <= 12.5% max HP / 50% Crippled Bar)
+    if (ship.hullHp <= disabledThreshold) {
+      if (ship.hullState !== 'DISABLED') {
+        ship.hullState = 'DISABLED';
+        ship.splineActive = false;
+        ship.velocity = { x: 0, y: 0 };
+        ship.commandedSpeed = 0;
+        this.addLog('CRIPPLE', `🚨 ${ship.name}: SHIP DISABLED (HP <= 12.5%). Halting completely; weapons, engines & active/passive defenses offline!`, 'crit');
+
+        // FIRE_TO_DISABLE protocol
         for (const m of this.missiles) {
           if (m.alive && m.targetId === ship.id) {
             const firingShip = this.ships.find((s) => s.id === m.sourceShipId);
@@ -3100,50 +3993,34 @@ export class SimulationEngine {
             if (isDisable) {
               m.alive = false;
               this.triggerSelfDestruct(m.pos, `[SELF-DESTRUCT: ${ship.name} DISABLED]`);
-              this.addLog(
-                'ORDNANCE',
-                `💥 Missile [${m.id}] self-destructed: Target ${ship.name} disabled (FIRE_TO_DISABLE protocol).`,
-                'info'
-              );
+              this.addLog('ORDNANCE', `💥 Missile [${m.id}] self-destructed: Target ${ship.name} disabled (FIRE_TO_DISABLE protocol).`, 'info');
             }
           }
         }
       }
-    } else if (ship.hullState === 'CRIPPLED') {
-      ship.crippleBar -= damage;
-      this.addLog('CRIPPLE', `${ship.name}: Derelict taking fire! Cripple Bar: ${Math.round(ship.crippleBar)}/${ship.crippleBarMax}`, 'crit');
 
-      // Frame Buckling below 50%
-      if (ship.crippleBar < ship.crippleBarMax * 0.5 && !ship.permanentFrameBuckled) {
-        ship.permanentFrameBuckled = true;
-        ship.maxRepairableHull = ship.hullMax * 0.50;
-        this.addLog('BUCKLE', `${ship.name}: STRUCTURAL FRAME BUCKLED. Max repair ceiling permanently capped at 50%!`, 'crit');
-      }
-
-      // Destroyed at 0%
-        if (ship.crippleBar <= 0) {
-        ship.crippleBar = 0;
-        ship.hullState = 'DESTROYED';
-        this.addLog('DESTROY', `${ship.name}: FRAME SHATTERED. Reduced to cold scrap (10% scrap floor). EM Mass projection dropped.`, 'crit');
-
-        if (ship.isStructure) {
-          this.updateResearchStationsCount();
-        }
-
-        if (ship.role === 'MINER' && (ship.cargoOre || 0) > 0) {
-          this.addLog('TACTICAL', `💥 ${ship.name} DESTROYED: ${Math.round(ship.cargoOre!)} Ore cargo permanently lost in vacuum!`, 'crit');
-          ship.cargoOre = 0;
-        }
-
-        if (ship.id === 'vanguard-01') {
-          this.vanguardRespawnTimer = 1.0;
-          this.addLog('TACTICAL', '⚠️ Vanguard-01 destroyed! Automated combat test protocol: Deploying new Vanguard Cruiser at primary coordinates (-220, 80) in 1.0s...', 'warn');
-        }
-
-        // Immediately purge dead entity references across selection, fleet groups, and targeting registers
-        this.purgeDestroyedEntities();
-      }
+      // Permanent Frame Damage Scaling:
+      // At entry (disabledRatio = 1.0): frame cap = 100%
+      // At 50% disabled damage (disabledRatio = 0.5): frame cap = 90%
+      // At 0% disabled damage (disabledRatio = 0.0): frame cap = 0%
+      const disabledRatio = Math.max(0, Math.min(1.0, ship.hullHp / Math.max(1, disabledThreshold)));
+      const frameCap = disabledRatio >= 0.5 ? 0.90 + ((disabledRatio - 0.5) / 0.5) * 0.10 : (disabledRatio / 0.5) * 0.90;
+      ship.maxRepairableHull = Math.min(ship.maxRepairableHull ?? ship.hullMax, frameCap * ship.hullMax);
+      ship.permanentFrameDamageCap = ship.maxRepairableHull / ship.hullMax;
+      return;
     }
+
+    // 3. CRIPPLED (HP <= 25% max HP / 100% to 50% Crippled Bar)
+    if (ship.hullHp <= crippleThreshold) {
+      if (ship.hullState !== 'CRIPPLED') {
+        ship.hullState = 'CRIPPLED';
+        this.addLog('CRIPPLE', `⚠️ ${ship.name}: HULL CRIPPLED (HP <= 25%). Speed and weapon accuracy degraded!`, 'warn');
+      }
+      return;
+    }
+
+    // 4. OPERATIONAL
+    ship.hullState = 'OPERATIONAL';
   }
 
   /**
@@ -3220,9 +4097,9 @@ export class SimulationEngine {
       }
     }
 
-    // 5. Threat buckets cleanup
+    // 5. Threat buckets cleanup - remove any keys that are not alive ships
     for (const targetId of this._threatBuckets.keys()) {
-      if (destroyedShipIds.has(targetId)) {
+      if (!aliveShipIds.has(targetId)) {
         this._threatBuckets.delete(targetId);
       }
     }
@@ -3288,7 +4165,8 @@ export class SimulationEngine {
   }
 
   public initHostilePatrol(ship: ShipEntity) {
-    initNPCPatrolState(ship, this.solarSystem);
+    const shipSys = this.getSystemForShip(ship)?.solarSystem || this.solarSystem;
+    initNPCPatrolState(ship, shipSys);
     if (!ship.patrolAnchor) {
       ship.patrolAnchor = { ...ship.pos };
     }
@@ -3404,7 +4282,8 @@ export class SimulationEngine {
       }
 
       // Execute NPC Gravity Well Patrol Anchor Engine, Procedural Wandering & 1.5x Leash State Machine
-      updateNPCPatrol(ship, this.ships, dt, this.solarSystem);
+      const shipSys = this.getSystemForShip(ship)?.solarSystem || this.solarSystem;
+      updateNPCPatrol(ship, this.ships, dt, shipSys);
     }
   }
 
@@ -3435,6 +4314,16 @@ export class SimulationEngine {
         // Escorts use fixed polar station-keeping offsets relative to the flagship,
         // eliminating the need for inter-escort repulsive force calculations.
         if (shipA.faction === 'FRIENDLY' && shipB.faction === 'FRIENDLY') {
+          continue;
+        }
+
+        // Interstellar isolation: ships in different star systems cannot collide
+        if (shipA.systemId && shipB.systemId && shipA.systemId !== shipB.systemId) {
+          continue;
+        }
+
+        // Two stationary structures do not push each other
+        if (shipA.isStationary && shipB.isStationary) {
           continue;
         }
 
@@ -3578,6 +4467,29 @@ export class SimulationEngine {
     return this.ships.find((s) => s.role === 'HQ' && s.hullState !== 'DESTROYED');
   }
 
+  public setHomeworldType(type: HomeworldTypeId): void {
+    this.homeworldType = type;
+    if (this.solarSystem?.primaryHabitablePlanet) {
+      applyHomeworldTypeToPlanet(this.solarSystem.primaryHabitablePlanet, type);
+    }
+  }
+
+  public setHQType(type: HqTypeId): void {
+    this.hqType = type;
+    const hq = this.ships.find((s) => s.role === 'HQ');
+    if (hq) {
+      applyHQDefinitionToShip(hq, type, this.playerFaction);
+    }
+  }
+
+  public getHQDefinition(): HqTypeDefinition {
+    return HQ_REGISTRY[this.hqType] || HQ_REGISTRY.NOVAN_COMMAND_SPIRE;
+  }
+
+  public getHomeworldDefinition(): HomeworldTypeDefinition {
+    return HOMEWORLD_REGISTRY[this.homeworldType] || HOMEWORLD_REGISTRY.TERRAN;
+  }
+
   public getHQResources(): HQResources {
     const hq = this.getHQ();
     if (hq && hq.resources) {
@@ -3590,14 +4502,28 @@ export class SimulationEngine {
       maxMetallic: 100000,
       organic: 0,
       maxOrganic: 100000,
+      neridium: 0,
+      maxNeridium: 1000,
     };
   }
 
   public updateAsteroids(dt: number) {
-    for (const ast of this.asteroids) {
+    const astLen = this.asteroids.length;
+    const store = this.asteroidSpatialStore;
+    const count = Math.min(store.count, astLen);
+    const pos = store.positions;
+    const rot = store.rotations;
+
+    for (let i = 0; i < count; i++) {
+      const ast = this.asteroids[i];
       ast.rotation += ast.rotationSpeed * dt;
+      pos[i * 2] = ast.pos.x;
+      pos[i * 2 + 1] = ast.pos.y;
+      rot[i] = ast.rotation || 0;
     }
-    this.asteroidSpatialStore.syncPositions(this.asteroids);
+    for (let i = count; i < astLen; i++) {
+      this.asteroids[i].rotation += this.asteroids[i].rotationSpeed * dt;
+    }
 
     // Replenish neutral field in the main asteroid belt (12k-16k km) if heavily depleted
     if (this.asteroids.length < 20 && Math.random() < 0.08 * dt) {
@@ -3638,10 +4564,11 @@ export class SimulationEngine {
 
     // Economic yield extraction from colonized planets (Terran governance)
     if (this.solarSystem && Array.isArray(this.solarSystem.rockyPlanets)) {
-      const colonizedPlanets = this.solarSystem.rockyPlanets.filter((p) => p.colonized && !p.isPrimaryHabitable);
-      if (colonizedPlanets.length > 0) {
-        const taxBonus = this.colonyTaxMult || 1.0;
-        for (const cp of colonizedPlanets) {
+      const taxBonus = this.colonyTaxMult || 1.0;
+      const rPlanets = this.solarSystem.rockyPlanets;
+      for (let pIdx = 0; pIdx < rPlanets.length; pIdx++) {
+        const cp = rPlanets[pIdx];
+        if (cp && cp.colonized && !cp.isPrimaryHabitable) {
           const yieldMet = (cp.resourceYieldRate?.metallic ?? 25.0) * taxBonus * dt;
           const yieldOrg = (cp.resourceYieldRate?.organic ?? 25.0) * taxBonus * dt;
           hq.resources.metallic = Math.min(hq.resources.maxMetallic, hq.resources.metallic + yieldMet);
@@ -3684,6 +4611,7 @@ export class SimulationEngine {
       hq.resources.metallic = Math.min(hq.resources.maxMetallic, hq.resources.metallic + actualOre * metRatio);
       hq.resources.organic = Math.min(hq.resources.maxOrganic, hq.resources.organic + actualOre * orgRatio);
       hq.refineryActive = true;
+      processRefineryOre(this, actualOre);
     } else {
       hq.refineryActive = false;
     }
@@ -3691,11 +4619,26 @@ export class SimulationEngine {
 
   public updateAutonomousMiners(dt: number) {
     const hq = this.getHQ();
-    const hostiles = this.ships.filter((s) => s.faction === 'HOSTILE' && s.hullState === 'OPERATIONAL');
     const missileRange = this.config.missileRange || 1000.0;
     const threatRadius = 2.0 * missileRange;
 
-    for (const ship of this.ships) {
+    // Cache living hostiles and allied friendly vessels once without allocating in-loop
+    const livingHostiles: ShipEntity[] = [];
+    const alliedShips: ShipEntity[] = [];
+    for (let i = 0; i < this.ships.length; i++) {
+      const s = this.ships[i];
+      if (s.hullState === 'DESTROYED') continue;
+      if (s.faction === 'HOSTILE' && (s.hullHp === undefined || s.hullHp > 0)) {
+        livingHostiles.push(s);
+      } else if (s.faction === 'FRIENDLY') {
+        alliedShips.push(s);
+      }
+    }
+
+    const threatsInRadarScratch: ShipEntity[] = [];
+
+    for (let sIdx = 0; sIdx < this.ships.length; sIdx++) {
+      const ship = this.ships[sIdx];
       if (!isMinerVessel(ship)) continue;
 
       // Permanent loss check on destruction
@@ -3722,17 +4665,22 @@ export class SimulationEngine {
       if (ship.minerStance === 'TIMID') {
         const minerRadarEnvelope = MINER_RADAR_ENVELOPE_KM; // 8400.0 km
         const minerRadarEnvelopeSq = minerRadarEnvelope * minerRadarEnvelope;
-        const threatsInRadar = hostiles.filter((h) => {
-          if (h.hullState === 'DESTROYED' || (h.hullHp !== undefined && h.hullHp <= 0)) return false;
-          const dSq = (h.pos.x - ship.pos.x) ** 2 + (h.pos.y - ship.pos.y) ** 2;
-          return dSq <= minerRadarEnvelopeSq;
-        });
+        threatsInRadarScratch.length = 0;
+
+        for (let hIdx = 0; hIdx < livingHostiles.length; hIdx++) {
+          const h = livingHostiles[hIdx];
+          const dx = h.pos.x - ship.pos.x;
+          const dy = h.pos.y - ship.pos.y;
+          if (dx * dx + dy * dy <= minerRadarEnvelopeSq) {
+            threatsInRadarScratch.push(h);
+          }
+        }
 
         const isBeingFiredUpon =
           (ship.lastUnderAttackTick !== undefined && this.tickCount - ship.lastUnderAttackTick < 150) ||
           (ship.hullHp !== undefined && ship.hullMax !== undefined && ship.hullHp < ship.hullMax);
 
-        const threatDetected = threatsInRadar.length > 0 || isBeingFiredUpon;
+        const threatDetected = threatsInRadarScratch.length > 0 || isBeingFiredUpon;
 
         if (threatDetected) {
           const wasMining = ship.minerClamped || ship.minerState === 'STATE_MINE';
@@ -3740,7 +4688,7 @@ export class SimulationEngine {
           if (!ship.minerRetreating || ship.minerState !== 'STATE_EVADING_HOSTILE') {
             ship.minerRetreating = true;
             ship.minerState = 'STATE_EVADING_HOSTILE';
-            const nearestThreatName = threatsInRadar.length > 0 ? threatsInRadar[0].name : 'Incoming Fire';
+            const nearestThreatName = threatsInRadarScratch.length > 0 ? threatsInRadarScratch[0].name : 'Incoming Fire';
             this.addLog(
               'RESOURCE',
               `⚠️ ${ship.name} [TIMID]: Hostile contact entered active radar envelope (8,400km) or opened fire (${nearestThreatName}). Aborting extraction -> Initiating STATE_EVADING_HOSTILE!`,
@@ -3756,8 +4704,7 @@ export class SimulationEngine {
 
           // 2, 3, 4. Calculate evasion vector opposite to threat vector V_evasion = normalize(P_miner - P_threat)
           // and burn at full thrust toward nearest allied gravity well, orbital refinery, or HQ station
-          const alliedShips = this.ships.filter((s) => s.faction === 'FRIENDLY' && s.hullState !== 'DESTROYED');
-          const evasionVector = computeMinerEvasionVector(ship, threatsInRadar, hq || null, alliedShips, this.solarSystem);
+          const evasionVector = computeMinerEvasionVector(ship, threatsInRadarScratch, hq || null, alliedShips, this.solarSystem);
           stepRetreatSteering(ship, evasionVector, dt, hq || null);
         } else if (ship.minerRetreating || ship.minerState === 'STATE_EVADING_HOSTILE') {
           // 5. Hostiles have cleared radar horizon; track clear ticks
@@ -3775,7 +4722,6 @@ export class SimulationEngine {
             );
           } else {
             // Still in hysteresis cooldown: maintain retreat steering toward sanctuary
-            const alliedShips = this.ships.filter((s) => s.faction === 'FRIENDLY' && s.hullState !== 'DESTROYED');
             const evasionVector = computeMinerEvasionVector(ship, [], hq || null, alliedShips, this.solarSystem);
             stepRetreatSteering(ship, evasionVector, dt, hq || null);
           }
@@ -3804,7 +4750,7 @@ export class SimulationEngine {
           if (ship.cargoOre >= ship.cargoOreMax) {
             ship.minerState = 'STATE_TRANSIT_TO_HQ';
             if (hq) {
-              launchMinerSpline(ship, getHQDockingTarget(ship, hq, R_TRANSFER), ship.cruiseSpeed || ship.maxSpeed);
+              launchMinerSpline(ship, getHQDockingTarget(ship, hq), ship.cruiseSpeed || ship.maxSpeed);
             }
             break;
           }
@@ -3818,9 +4764,9 @@ export class SimulationEngine {
 
           if (
             !targetAsteroid ||
-            (ship.minerStance === 'TIMID' && isAsteroidThreatened(targetAsteroid, hostiles, threatRadius))
+            (ship.minerStance === 'TIMID' && isAsteroidThreatened(targetAsteroid, livingHostiles, threatRadius))
           ) {
-            const candidate = findCandidateAsteroid(ship, this.asteroids, hostiles, missileRange);
+            const candidate = findCandidateAsteroid(ship, this.asteroids, livingHostiles, missileRange);
             if (candidate.asteroid) {
               targetAsteroid = candidate.asteroid;
               ship.minerTargetAsteroidId = targetAsteroid.id;
@@ -3890,7 +4836,7 @@ export class SimulationEngine {
           }
 
           // If Timid and threatened, abort extraction immediately
-          if (ship.minerStance === 'TIMID' && isAsteroidThreatened(ast, hostiles, threatRadius)) {
+          if (ship.minerStance === 'TIMID' && isAsteroidThreatened(ast, livingHostiles, threatRadius)) {
             unclampMiner(ship);
             ship.minerState = ship.cargoOre > 0 ? 'STATE_RETURN' : 'STATE_SEEK';
             if (ship.minerState === 'STATE_RETURN' && hq) {
@@ -3943,7 +4889,7 @@ export class SimulationEngine {
             // Immediately re-enable absolute world-space flight
             if (ship.cargoOre >= ship.cargoOreMax) {
               ship.minerState = 'STATE_TRANSIT_TO_HQ';
-              if (hq) launchMinerSpline(ship, getHQDockingTarget(ship, hq, R_TRANSFER), ship.cruiseSpeed || ship.maxSpeed);
+              if (hq) launchMinerSpline(ship, getHQDockingTarget(ship, hq), ship.cruiseSpeed || ship.maxSpeed);
             } else {
               ship.minerState = 'STATE_TRANSIT_TO_ASTEROID';
             }
@@ -3954,9 +4900,10 @@ export class SimulationEngine {
           if (ship.cargoOre >= ship.cargoOreMax) {
             ship.cargoOre = ship.cargoOreMax;
             unclampMiner(ship);
-            this.addLog('RESOURCE', `${ship.name}: Cargo hold full (${ship.cargoOreMax} Ore). Tether unclamped. RTB to HQ silos at 250km transfer perimeter.`, 'info');
+            const dropRange = hq?.oreDropOffRange || hq?.dockingRadius || R_TRANSFER;
+            this.addLog('RESOURCE', `${ship.name}: Cargo hold full (${ship.cargoOreMax} Ore). Tether unclamped. RTB to HQ silos at ${Math.round(dropRange)}km transfer perimeter.`, 'info');
             ship.minerState = 'STATE_TRANSIT_TO_HQ';
-            if (hq) launchMinerSpline(ship, getHQDockingTarget(ship, hq, R_TRANSFER), ship.cruiseSpeed || ship.maxSpeed);
+            if (hq) launchMinerSpline(ship, getHQDockingTarget(ship, hq), ship.cruiseSpeed || ship.maxSpeed);
           }
           break;
         }
@@ -3972,25 +4919,35 @@ export class SimulationEngine {
           }
 
           const distToHq = getHQDistance(ship, hq);
+          const effectiveTransferRadius = hq.oreDropOffRange || hq.dockingRadius || R_TRANSFER;
+          const effectiveApproachRadius = effectiveTransferRadius * 1.5;
+          const dockingTarget = getHQDockingTarget(ship, hq);
+          const distToDockTarget = Math.hypot(ship.pos.x - dockingTarget.x, ship.pos.y - dockingTarget.y);
 
-          // 1. ARRIVAL THRESHOLD: D <= R_transfer (250 km)
-          if (distToHq <= R_TRANSFER) {
-            engageMinerDockingStationKeeping(ship, hq, R_TRANSFER);
+          // 1. ARRIVAL THRESHOLD: entered transfer perimeter (+ buffer) or reached docking perimeter target
+          const isRing = Boolean(hq.isRingStructure || hq.hqType === 'GARN_RING_CITADEL' || hq.isGarnRing);
+          const inTransferPerimeter =
+            isWithinHQTransferRange(ship, hq, effectiveTransferRadius) ||
+            distToHq <= effectiveTransferRadius + (isRing ? 60.0 : 40.0) ||
+            distToDockTarget <= 60.0 ||
+            (!ship.splineActive && distToDockTarget <= 120.0);
+
+          if (inTransferPerimeter) {
+            engageMinerDockingStationKeeping(ship, hq, effectiveTransferRadius);
             this.addLog(
               'RESOURCE',
-              `⚓ ${ship.name}: Entered HQ ore transfer perimeter (${Math.round(distToHq)}km <= 250km). Station-keeping hold locked. High-speed offload engaged (3,000 Ore/s).`,
+              `⚓ ${ship.name}: Entered HQ ore transfer perimeter (${Math.round(distToHq)}km <= ${Math.round(effectiveTransferRadius)}km). Station-keeping hold locked. High-speed offload engaged (3,000 Ore/s).`,
               'info'
             );
             break;
           }
 
-          // 2. APPROACH DECELERATION: within 1.5 * R_transfer (375 km), clamp thrust & retro-brake
-          if (distToHq <= HQ_ORE_TRANSFER_APPROACH_RANGE_KM) {
-            applyMinerApproachBraking(ship, hq, dt, R_TRANSFER);
+          // 2. APPROACH DECELERATION: within 1.5 * effectiveTransferRadius, clamp thrust & retro-brake
+          if (distToHq <= effectiveApproachRadius) {
+            applyMinerApproachBraking(ship, hq, dt, effectiveTransferRadius);
           }
 
           // 3. TRAJECTORY UPDATES TOWARDS HQ DOCKING PERIMETER
-          const dockingTarget = getHQDockingTarget(ship, hq, R_TRANSFER);
           if (!ship.splineActive) {
             launchMinerSpline(ship, dockingTarget, ship.cruiseSpeed || ship.maxSpeed);
           } else {
@@ -4034,7 +4991,7 @@ export class SimulationEngine {
               'info'
             );
 
-            const nextAst = findCandidateAsteroid(ship, this.asteroids, hostiles, missileRange);
+            const nextAst = findCandidateAsteroid(ship, this.asteroids, livingHostiles, missileRange);
             if (nextAst.asteroid) {
               dispatchMinerReturnToAsteroids(ship, hq, nextAst.asteroid);
             } else {
@@ -4074,7 +5031,8 @@ export class SimulationEngine {
         activeItem.unitRole === 'BATTLESHIP' ||
         activeItem.unitRole === 'DREADNOUGHT' ||
         activeItem.unitRole === 'CARRIER' ||
-        activeItem.unitRole === 'SUPER_CARRIER';
+        activeItem.unitRole === 'SUPER_CARRIER' ||
+        activeItem.unitRole === 'CITY_SHIP';
       if (isCapitalShip && this.capitalShipBuildTimeMult < 1.0) {
         speedMult /= this.capitalShipBuildTimeMult;
       }
@@ -4083,13 +5041,32 @@ export class SimulationEngine {
       if (activeItem.buildTimeRemaining <= 0) {
         // Build complete! Remove from queue and spawn unit
         station.productionQueue.shift();
-        this.spawnConstructedUnit(station, activeItem.unitRole);
-        this.addLog('LOGISTICS', `🚀 CONSTRUCTION COMPLETE: [${activeItem.name}] deployed from ${station.name}!`, 'info');
+        this.spawnConstructedUnit(
+          station,
+          activeItem.unitRole,
+          activeItem.commissionerFaction,
+          activeItem.proxyFaction,
+          activeItem.shipClass
+        );
+        const rallyMsg = station.rallyPoint
+          ? ` and rallying to coordinates [${Math.round(station.rallyPoint.x)}, ${Math.round(station.rallyPoint.y)}]`
+          : '';
+        this.addLog(
+          'LOGISTICS',
+          `🚀 CONSTRUCTION COMPLETE: [${activeItem.name}] deployed from ${station.name}${rallyMsg}!`,
+          'info'
+        );
       }
     }
   }
 
-  private spawnConstructedUnit(station: ShipEntity, unitRole: NavalUnitRole) {
+  private spawnConstructedUnit(
+    station: ShipEntity,
+    unitRole: NavalUnitRole,
+    commissionerFaction?: FactionId,
+    proxyFaction?: FactionId,
+    shipClass?: string
+  ) {
     const spawnId = `unit-${unitRole.toLowerCase()}-${Date.now().toString(36)}`;
     const angle = (Math.random() - 0.5) * Math.PI * 0.5;
     const offsetDist = (station.dockingRadius || 65) + 40;
@@ -4139,17 +5116,17 @@ export class SimulationEngine {
         pdplaActiveBeamTarget: null,
         pdplaBeamTimer: 0.0,
         pdplaBeamHit: true,
-        shieldHpMax: 360.0,
-        shieldHp: 360.0,
+        shieldHpMax: 600.0,
+        shieldHp: 600.0,
         shieldHeat: 0.0,
         shieldHeatMax: 100.0,
         shieldOverheated: false,
         shieldCooldownTimer: 0.0,
-        hullMax: 100.0,
-        hullHp: 100.0,
-        maxRepairableHull: 100.0,
-        crippleBarMax: 80.0,
-        crippleBar: 80.0,
+        hullMax: 1000.0,
+        hullHp: 1000.0,
+        maxRepairableHull: 1000.0,
+        crippleBarMax: 250.0,
+        crippleBar: 250.0,
         hullState: 'OPERATIONAL',
         permanentFrameBuckled: false,
         massRating: 30000.0,
@@ -4191,21 +5168,21 @@ export class SimulationEngine {
         ewarJammingRating: 0.10,
         pdplaRange: 65.0,
         pdplaCooldown: 0.0,
-        pdBeams: 1,
+        pdBeams: 2,
         pdplaActiveBeamTarget: null,
         pdplaBeamTimer: 0.0,
         pdplaBeamHit: true,
-        shieldHpMax: 700.0,
-        shieldHp: 700.0,
+        shieldHpMax: 1000.0,
+        shieldHp: 1000.0,
         shieldHeat: 0.0,
         shieldHeatMax: 100.0,
         shieldOverheated: false,
         shieldCooldownTimer: 0.0,
-        hullMax: 250.0,
-        hullHp: 250.0,
-        maxRepairableHull: 250.0,
-        crippleBarMax: 200.0,
-        crippleBar: 200.0,
+        hullMax: 1800.0,
+        hullHp: 1800.0,
+        maxRepairableHull: 1800.0,
+        crippleBarMax: 450.0,
+        crippleBar: 450.0,
         hullState: 'OPERATIONAL',
         permanentFrameBuckled: false,
         massRating: 45000.0,
@@ -4604,6 +5581,67 @@ export class SimulationEngine {
         fmsActive: false,
         fmsMultiplier: 1.5,
       };
+    } else if (unitRole === 'CITY_SHIP' || (unitRole as string) === 'CS') {
+      newShip = {
+        id: spawnId,
+        name: `CityShip-${spawnId.slice(-3).toUpperCase()}`,
+        faction: 'FRIENDLY',
+        factionId: (this as any).playerFaction || 'YESTIRI',
+        role: 'CITY_SHIP',
+        pos: spawnPos,
+        velocity: { x: 0, y: 0 },
+        heading: angle,
+        maxSpeed: 420.0,
+        splineActive: false,
+        splineP0: { x: 0, y: 0 },
+        splineM0: { x: 0, y: 0 },
+        splineP1: { x: 0, y: 0 },
+        splineM1: { x: 0, y: 0 },
+        splineT: 0,
+        splineDuration: 1.0,
+        h2FuelMax: 12000.0,
+        h2Fuel: 12000.0,
+        fuelReserveRule: 0.30,
+        missilesMax: 3000,
+        missiles: 3000,
+        missileTubes: 24,
+        counterMissiles: 800,
+        counterMissilesMax: 800,
+        counterMissilesPerSalvo: 16,
+        counterMissileCooldown: 0.0,
+        missileCooldown: 0.0,
+        missileRange: 2200.0,
+        combatStance: 'DEFENSIVE',
+        aggressiveDoctrine: 'KILL',
+        autoFire: true,
+        ewarJammingRating: 0.45,
+        pdplaRange: 120.0,
+        pdplaCooldown: 0.0,
+        pdBeams: 12,
+        pdplaActiveBeamTarget: null,
+        pdplaBeamTimer: 0.0,
+        pdplaBeamHit: true,
+        shieldHpMax: 12000.0,
+        shieldHp: 12000.0,
+        shieldHeat: 0.0,
+        shieldHeatMax: 100.0,
+        shieldOverheated: false,
+        shieldCooldownTimer: 0.0,
+        hullMax: 5000.0,
+        hullHp: 5000.0,
+        maxRepairableHull: 5000.0,
+        crippleBarMax: 4000.0,
+        crippleBar: 4000.0,
+        hullState: 'OPERATIONAL',
+        permanentFrameBuckled: false,
+        massRating: 450000.0,
+        fmsActive: false,
+        fmsMultiplier: 1.5,
+        renderedLength: 190.0,
+        radius: 75.0,
+        selectionRadius: 80.0,
+        isYestiriRing: true,
+      };
     } else if (unitRole === 'COLLIER') {
       newShip = {
         id: spawnId,
@@ -4883,8 +5921,89 @@ export class SimulationEngine {
       };
     }
 
+    // Apply faction designation & proxy enhancements
+    newShip.factionId = commissionerFaction || station.factionId || this.playerFaction;
+    newShip.proxyFaction = proxyFaction;
+    newShip.systemId = station.systemId;
+
+    const effectiveFaction = proxyFaction || newShip.factionId;
+    if (effectiveFaction === 'GARN') {
+      newShip.hullMax = Math.round(newShip.hullMax * 1.65);
+      newShip.hullHp = newShip.hullMax;
+      newShip.shieldHpMax = Math.round(newShip.shieldHpMax * 1.35);
+      newShip.shieldHp = newShip.shieldHpMax;
+      newShip.maxSpeed = Math.round(newShip.maxSpeed * 0.65);
+    } else if (effectiveFaction === 'ALDONAH') {
+      newShip.hullMax = Math.round(newShip.hullMax * 1.30);
+      newShip.hullHp = newShip.hullMax;
+      newShip.shieldHpMax = Math.round(newShip.shieldHpMax * 0.90);
+      newShip.shieldHp = newShip.shieldHpMax;
+      newShip.armorMitigation = 0.30;
+      newShip.maxSpeed = Math.round(newShip.maxSpeed * 0.85);
+    } else if (effectiveFaction === 'YESTIRI') {
+      newShip.shieldHpMax = Math.round(newShip.shieldHpMax * 1.40);
+      newShip.shieldHp = newShip.shieldHpMax;
+      newShip.maxSpeed = Math.round(newShip.maxSpeed * 0.90);
+    } else if (effectiveFaction === 'LIAAL' && !proxyFaction) {
+      newShip.hullMax = Math.round(newShip.hullMax * 0.30);
+      newShip.hullHp = newShip.hullMax;
+      newShip.shieldHpMax = Math.round(newShip.shieldHpMax * 0.30);
+      newShip.shieldHp = newShip.shieldHpMax;
+      newShip.maxSpeed = Math.round(newShip.maxSpeed * 1.05);
+      if (newShip.cargoOreMax) newShip.cargoOreMax = Math.round(newShip.cargoOreMax * 2.0);
+    } else if (effectiveFaction === 'KOVAK') {
+      newShip.hullMax = Math.round(newShip.hullMax * 0.40);
+      newShip.hullHp = newShip.hullMax;
+      newShip.maxRepairableHull = newShip.hullMax;
+      newShip.crippleBarMax = Math.round(newShip.hullMax * 0.25);
+      newShip.crippleBar = newShip.crippleBarMax;
+      newShip.shieldHpMax = Math.round(newShip.shieldHpMax * 0.40);
+      newShip.shieldHp = newShip.shieldHpMax;
+      newShip.maxSpeed = Math.round(newShip.maxSpeed * 1.10);
+    }
+
     applyShipKinematics(newShip, unitRole);
-    this.ships.push(this.sanitizeShip(newShip));
+    const sanitized = this.sanitizeShip(newShip);
+    this.ships.push(sanitized);
+
+    // If shipyard/HQ has a designated rally point, immediately dispatch the newly commissioned vessel
+    if (station.rallyPoint) {
+      this.setAutonomousSplineOrder(sanitized, station.rallyPoint);
+    }
+  }
+
+  /**
+   * Sets or clears the tactical rally point for a shipyard or HQ facility
+   */
+  public setRallyPoint(stationId: string, point: Vec2D | null): boolean {
+    const station = this.ships.find((s) => s.id === stationId);
+    if (!station) return false;
+    station.rallyPoint = point ? { x: point.x, y: point.y } : null;
+    if (point) {
+      this.addLog(
+        'LOGISTICS',
+        `🚩 Rally Point designated for ${station.name} at [${Math.round(point.x)}, ${Math.round(point.y)}].`,
+        'info'
+      );
+    } else {
+      this.addLog('LOGISTICS', `Rally Point cleared for ${station.name}.`, 'info');
+    }
+    return true;
+  }
+
+  /**
+   * Toggles proxy construction permissions on a shipyard slipway
+   */
+  public toggleShipyardProxyBuild(stationId: string): boolean {
+    const station = this.ships.find((s) => s.id === stationId);
+    if (!station) return false;
+    station.allowProxyBuild = station.allowProxyBuild === undefined ? false : !station.allowProxyBuild;
+    this.addLog(
+      'LOGISTICS',
+      `🔧 [${station.name}] Proxy Construction toggled ${station.allowProxyBuild ? 'ENABLED' : 'DISABLED'}.`,
+      station.allowProxyBuild ? 'info' : 'warn'
+    );
+    return station.allowProxyBuild;
   }
 
   public queueBuildOrder(stationId: string, unitRole: NavalUnitRole): boolean {
@@ -4895,11 +6014,14 @@ export class SimulationEngine {
       station,
       unitRole,
       () => this.getHQResources(),
-      (m, o) => {
+      (m, o, n) => {
         const hq = this.getHQ();
         if (hq && hq.resources) {
           hq.resources.metallic -= m;
           hq.resources.organic -= o;
+          if (n && hq.resources.neridium !== undefined) {
+            hq.resources.neridium = Math.max(0, hq.resources.neridium - n);
+          }
         }
       },
       (cat, msg, lvl) => this.addLog(cat, msg, lvl),
@@ -4926,6 +6048,37 @@ export class SimulationEngine {
       unclampMiner(ship);
     }
     this.addLog('TACTICAL', `${ship.name}: Retro-burn executed. Vector held (Full Stop).`, 'info');
+  }
+
+  public triggerShieldReboot(shipId: string): boolean {
+    const ship = this.ships.find((s) => s.id === shipId);
+    if (!ship) return false;
+    const success = triggerShieldReboot(ship);
+    if (success) {
+      this.addLog(
+        'TACTICAL',
+        `${ship.name}: COLD REBOOT initiated! Thermal shunts active. Full shield cycle in 4.0s.`,
+        'warn'
+      );
+    }
+    return success;
+  }
+
+  public initiateMicroJump(shipId: string, targetCoords: Vec2D): boolean {
+    const ship = this.ships.find((s) => s.id === shipId);
+    if (!ship) return false;
+    const isNovan = ship.factionId === 'NOVAN' || this.playerFaction === 'NOVAN' || (ship as any).isNovan;
+    const res = initiateMicroJump(ship, targetCoords, isNovan);
+    if (res.success) {
+      this.addLog(
+        'TACTICAL',
+        `${ship.name}: Hyper-velocity micro-jump drive spooled. Target locked.`,
+        'info'
+      );
+    } else if (res.reason) {
+      this.addLog('NAV', `${ship.name}: Micro-jump aborted - ${res.reason}`, 'warn');
+    }
+    return res.success;
   }
 
   public forceMinerReturn(minerId: string) {
@@ -5198,18 +6351,40 @@ export class SimulationEngine {
       // Area of Effect: Encompasses the entire host planetary gravity well
       const hostPlanet = this.findHostPlanetForPosition(bay.pos);
       const wellRadius = hostPlanet ? getPlanetaryGravityWellRadius(hostPlanet) : 800.0;
+      const wellRadiusSq = wellRadius * wellRadius;
       const wellCenter = hostPlanet ? hostPlanet.pos : bay.pos;
 
       // Detection envelope: Missile range (850.0) around the Repair Bay
       const engagementRange = bay.missileRange || 850.0;
-      const hostileShipDetected = this.ships.some(
-        (h) => h.faction === 'HOSTILE' && h.hullState === 'OPERATIONAL' && Math.hypot(h.pos.x - bay.pos.x, h.pos.y - bay.pos.y) <= engagementRange
-      );
-      const hostileMissileDetected = this.missiles.some(
-        (m) => m.alive && m.faction === 'HOSTILE' && Math.hypot(m.pos.x - bay.pos.x, m.pos.y - bay.pos.y) <= engagementRange
-      );
+      const engagementRangeSq = engagementRange * engagementRange;
+      let inCombat = false;
 
-      const inCombat = hostileShipDetected || hostileMissileDetected;
+      for (let j = 0; j < this.ships.length; j++) {
+        const h = this.ships[j];
+        if (h.faction === 'HOSTILE' && h.hullState === 'OPERATIONAL') {
+          const dx = h.pos.x - bay.pos.x;
+          const dy = h.pos.y - bay.pos.y;
+          if (dx * dx + dy * dy <= engagementRangeSq) {
+            inCombat = true;
+            break;
+          }
+        }
+      }
+
+      if (!inCombat) {
+        for (let mIdx = 0; mIdx < this.missiles.length; mIdx++) {
+          const m = this.missiles[mIdx];
+          if (m.alive && m.faction === 'HOSTILE') {
+            const dx = m.pos.x - bay.pos.x;
+            const dy = m.pos.y - bay.pos.y;
+            if (dx * dx + dy * dy <= engagementRangeSq) {
+              inCombat = true;
+              break;
+            }
+          }
+        }
+      }
+
       bay.repairMode = inCombat ? 'COMBAT' : 'PEACE';
 
       // Peace Mode: Restores 10 Hull HP/sec and 15 Shield Points/sec.
@@ -5224,8 +6399,9 @@ export class SimulationEngine {
       for (let j = 0; j < this.ships.length; j++) {
         const s = this.ships[j];
         if (s.faction !== 'FRIENDLY' || s.isUnderConstruction || s.hullState === 'DESTROYED') continue;
-        const dWell = Math.hypot(s.pos.x - wellCenter.x, s.pos.y - wellCenter.y);
-        if (dWell <= wellRadius) {
+        const dxW = s.pos.x - wellCenter.x;
+        const dyW = s.pos.y - wellCenter.y;
+        if (dxW * dxW + dyW * dyW <= wellRadiusSq) {
           const isDamaged =
             s.hullHp < s.hullMax ||
             s.crippleBar < s.crippleBarMax ||
@@ -5276,6 +6452,7 @@ export class SimulationEngine {
         hq.resources.metallic = Math.min(hq.resources.maxMetallic, hq.resources.metallic + consumed * 0.52);
         hq.resources.organic = Math.min(hq.resources.maxOrganic, hq.resources.organic + consumed * 0.48);
         ref.refineryAccumulator = (ref.refineryAccumulator || 0) + consumed;
+        processRefineryOre(this, consumed);
       }
     }
   }

@@ -26,7 +26,13 @@ export interface WeaponContext {
   ships?: ShipEntity[];
   ordnanceBridge?: OrdnanceBridge;
   combatModifiers: CombatModifiers;
-  addLog: (category: string, message: string, severity?: 'info' | 'warn' | 'crit' | 'success') => void;
+  addLog: (
+    category: string,
+    message: string,
+    severity?: 'info' | 'warn' | 'crit' | 'success',
+    isPlayerOwned?: boolean,
+    sourceFaction?: string
+  ) => void;
   applyHitToShip?: (target: ShipEntity, damage: number) => void;
   nextMissileId: () => string;
 }
@@ -70,14 +76,17 @@ export function fireMissiles(
   if (!isTargetAlive || ship.missiles <= 0) return;
 
   // Range validation: squared Euclidean distance check (D^2 <= R^2)
+  const isGarnRing = Boolean(ship.isGarnRing || (ship.role === 'HQ' && (ship.factionId === 'GARN' || (ship.faction as any) === 'GARN')));
+  const ringRadius = isGarnRing ? (ship.radius || 700) : 0;
+
   const modifiers: Partial<CombatModifiers> = state.combatModifiers || {};
   const effectiveMissileRange = BASE_TACTICAL_RANGES.missileLockRangeKm * (modifiers.missileRangeMult ?? 1.0);
-  const missileRangeSq = effectiveMissileRange * effectiveMissileRange;
 
   const targetDx = target.pos.x - ship.pos.x;
   const targetDy = target.pos.y - ship.pos.y;
-  const targetDistSq = targetDx * targetDx + targetDy * targetDy;
-  if (targetDistSq > missileRangeSq) {
+  const targetDist = Math.hypot(targetDx, targetDy);
+  const effectiveTargetDist = Math.max(0, targetDist - ringRadius);
+  if (effectiveTargetDist > effectiveMissileRange) {
     return;
   }
 
@@ -88,39 +97,6 @@ export function fireMissiles(
   const stbdTubes = spec.broadsideMissileTubesStbd;
   const bowTubes = spec.bowMissileTubes;
   const totalSalvoCapacity = spec.totalMissileSalvo;
-
-  // If SoA ordnance bridge is active, route salvo directly into zero-allocation buffer
-  if (state.ordnanceBridge) {
-    const toFire = Math.min(availableMissiles, totalSalvoCapacity);
-    if (toFire > 0) {
-      ship.missiles = Math.max(0, ship.missiles - toFire);
-      const baseTicks = ship.baseSalvoCooldownTicks || 54;
-      const reloadMult = ship.faction === 'FRIENDLY'
-        ? (state.combatModifiers?.missileReloadMultiplier ?? 1.0)
-        : 1.0;
-      ship.salvoCooldownTicksRemaining = Math.max(1, Math.round(baseTicks * reloadMult));
-      ship.missileCooldown = ship.salvoCooldownTicksRemaining / 30;
-
-      const shipsList = state.ships || [ship, target];
-      state.ordnanceBridge.fireSalvo(
-        ship,
-        target,
-        shipsList,
-        toFire,
-        160.0,
-        effectiveMissileRange,
-        DEFAULT_MISSILE_SPEED
-      );
-
-      const prefix = ship.faction === 'HOSTILE' ? '🚨 ' : '';
-      state.addLog(
-        'ORDNANCE',
-        `${prefix}${ship.name} [${ship.faction}]: Broadside/Bow salvo of ${toFire} missiles launched at ${target.name}!`,
-        'warn'
-      );
-      return;
-    }
-  }
 
   let firingBudget = Math.min(availableMissiles, totalSalvoCapacity);
   const initialBudget = firingBudget;
@@ -158,10 +134,13 @@ export function fireMissiles(
   ship.missileCooldown = ship.salvoCooldownTicksRemaining / 30;
 
   const prefix = ship.faction === 'HOSTILE' ? '🚨 ' : '';
+  const isPlayerOwned = ship.faction === 'FRIENDLY';
   state.addLog(
     'ORDNANCE',
     `${prefix}${ship.name} [${ship.faction}]: Broadside/Bow salvo of ${actuallyFired} missiles launched at ${target.name}!`,
-    'warn'
+    'warn',
+    isPlayerOwned,
+    ship.faction
   );
 }
 
@@ -194,6 +173,9 @@ export function spawnBroadsideMissiles(
   const doctrine = ship.aggressiveDoctrine || 'KILL';
   const missileClass = getMissileClass(ship.role);
 
+  const isPirateShooter = Boolean(ship.isPirate || ship.factionId === 'PIRATE' || (ship.faction as string) === 'PIRATE' || ship.id.includes('pirate'));
+  const effectiveMissileDamage = isPirateShooter ? 65.0 : 160.0;
+
   for (let k = 0; k < count; k++) {
     const spacing = count > 1 ? (k / (count - 1) - 0.5) * (r * 1.3) : 0;
     const originX = ship.pos.x + flankDirX * (r * 0.75) + fwdDirX * spacing;
@@ -222,7 +204,7 @@ export function spawnBroadsideMissiles(
       maxLifetime: 20.0,
       lifetime: 0,
       alive: true,
-      damage: 160.0,
+      damage: effectiveMissileDamage,
       visualSeed: Math.random() * 100,
       trail: [],
       trailSampleTimer: 0,
@@ -277,6 +259,9 @@ export function spawnBowMissiles(
   const doctrine = ship.aggressiveDoctrine || 'KILL';
   const missileClass = getMissileClass(ship.role);
 
+  const isPirateShooter = Boolean(ship.isPirate || ship.factionId === 'PIRATE' || (ship.faction as string) === 'PIRATE' || ship.id.includes('pirate'));
+  const effectiveMissileDamage = isPirateShooter ? 65.0 : 160.0;
+
   for (let k = 0; k < count; k++) {
     const spacing = count > 1 ? (k / (count - 1) - 0.5) * (r * 0.55) : 0;
     const originX = ship.pos.x + fwdDirX * (r * 0.95) + latDirX * spacing;
@@ -295,7 +280,7 @@ export function spawnBowMissiles(
       maxLifetime: 20.0,
       lifetime: 0,
       alive: true,
-      damage: 160.0,
+      damage: effectiveMissileDamage,
       visualSeed: Math.random() * 100,
       trail: [],
       trailSampleTimer: 0,
@@ -334,7 +319,11 @@ export function updateDirectFireWeapons(
 
   const dx = target.pos.x - ship.pos.x;
   const dy = target.pos.y - ship.pos.y;
-  const dSq = dx * dx + dy * dy;
+  const isGarnRing = Boolean(ship.isGarnRing || (ship.role === 'HQ' && (ship.factionId === 'GARN' || (ship.faction as any) === 'GARN')));
+  const ringRadius = isGarnRing ? (ship.radius || 700) : 0;
+  const rawDist = Math.hypot(dx, dy);
+  const effectiveDist = Math.max(0, rawDist - ringRadius);
+  const dSq = effectiveDist * effectiveDist;
 
   // Engagement validation: Offensive Energy Beam Array (300 km base, R_Beam = 1/8 R_Missile)
   const effectiveBeamRange =
@@ -391,10 +380,13 @@ export function updateDirectFireWeapons(
         ship.offensiveLaserTarget.y = target.pos.y;
       }
       ship.offensiveLaserTargetId = target.id;
+      const isPlayerOwned = ship.faction === 'FRIENDLY';
       state.addLog(
         'ENERGY',
         `⚡ ${ship.name}: Fired ${spec.offensiveLasers} Offensive Lasers at ${target.name} [50 DPS, 3.0s beam, <= ${Math.round(effectiveBeamRange)}km]`,
-        'info'
+        'info',
+        isPlayerOwned,
+        ship.faction
       );
     }
   }
@@ -436,10 +428,13 @@ export function updateDirectFireWeapons(
         ship.offensiveGraserTarget.y = target.pos.y;
       }
       ship.offensiveGraserTargetId = target.id;
+      const isPlayerOwned = ship.faction === 'FRIENDLY';
       state.addLog(
         'ENERGY',
         `⚛️ ${ship.name}: Heavy Grasers engaged ${target.name} [100 DPS, Armor Piercing, 3.0s beam]!`,
-        'warn'
+        'warn',
+        isPlayerOwned,
+        ship.faction
       );
     }
   }
@@ -465,16 +460,23 @@ export function applyEnergyDamage(
 
   // Shield resolution
   if (!target.shieldOverheated && target.shieldHp > 0) {
+    let effectiveDmg = damage;
+    if ((target.shieldHardeningTimer ?? 0) > 0) {
+      effectiveDmg *= 0.80; // 20% Novan hardening mitigation
+    }
     if (isPiercing) {
       // Grasers pierce shields: 50% bypass directly into hull
-      const shieldDmg = damage * 0.5;
+      const shieldDmg = effectiveDmg * 0.5;
       const hullDmg = damage * 0.5;
       target.shieldHp -= shieldDmg;
       target.shieldHeat += shieldDmg * 0.28;
       target.hullHp = Math.max(0, target.hullHp - hullDmg);
     } else {
-      target.shieldHp -= damage;
-      target.shieldHeat += damage * 0.28;
+      target.shieldHp -= effectiveDmg;
+      target.shieldHeat += effectiveDmg * 0.28;
+    }
+    if (target.currentShield !== undefined) {
+      target.currentShield = target.shieldHp;
     }
 
     if (target.shieldHeat >= target.shieldHeatMax || target.shieldHp <= 0) {

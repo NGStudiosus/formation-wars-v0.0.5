@@ -34,10 +34,19 @@ export function calculateLunarGravityWellRadius(
 
 /**
  * Calculates asteroid cluster gravity well radius:
- * Fixed 1,800 km capture zone (exempt from surface gravity scaling).
+ * Size of the cluster + 10% (1.10x envelope margin).
  */
-export function calculateClusterGravityWellRadius(_envelopeRadius?: number): number {
-  return FIXED_ASTEROID_CLUSTER_WELL_RADIUS;
+export function calculateClusterGravityWellRadius(
+  clusterOrRadius?: AsteroidCluster | number | { radius?: number; envelopeRadius?: number; wellRadius?: number }
+): number {
+  if (typeof clusterOrRadius === 'object' && clusterOrRadius !== null) {
+    const r = (clusterOrRadius as any).radius || (clusterOrRadius as any).envelopeRadius || (clusterOrRadius as any).wellRadius || 2200;
+    return Math.round(r * 1.10);
+  }
+  if (typeof clusterOrRadius === 'number' && clusterOrRadius > 0) {
+    return Math.round(clusterOrRadius * 1.10);
+  }
+  return Math.round(2200 * 1.10);
 }
 
 /**

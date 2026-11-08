@@ -1,6 +1,8 @@
-import { ShipEntity, JumpGateEntity, SimulationConfig } from '../types';
+import { ShipEntity, JumpGateEntity, SimulationConfig, FactionId, GameSetupConfig, HqTypeId } from '../types';
+import { FACTION_REGISTRY, ALL_FACTION_IDS } from './factions/factionRegistry';
 import { K_SCALE } from './systemConstants';
 import { applyShipKinematics } from './kinematics';
+import { applyHQDefinitionToShip, getDefaultHQForFaction } from './hqRegistry';
 
 export { spawnSystemHostiles, createHostileShip } from './pirates';
 
@@ -13,7 +15,7 @@ export interface ScenarioDefinition {
   defaultConfig?: Partial<SimulationConfig>;
 }
 
-export function createDefaultShips(): ShipEntity[] {
+export function createDefaultShips(playerFaction: FactionId = 'NOVAN', hqType?: HqTypeId): ShipEntity[] {
   const ships: ShipEntity[] = [
     {
       id: 'vanguard-01',
@@ -472,6 +474,8 @@ export function createDefaultShips(): ShipEntity[] {
         maxMetallic: 150000,
         organic: 50000,
         maxOrganic: 150000,
+        neridium: 10,
+        maxNeridium: 1000,
       },
       refineryRate: 30.0,
       refineryActive: true,
@@ -1185,6 +1189,21 @@ export function createDefaultShips(): ShipEntity[] {
   ];
 
   for (const s of ships) {
+    if (s.faction === 'FRIENDLY') {
+      s.factionId = playerFaction;
+      if (playerFaction === 'LIAAL') {
+        // Cargo-heavy expansion doctrine bonus
+        if (s.materialsStored) {
+          s.materialsStored.metallicMax *= 2;
+          s.materialsStored.organicMax *= 2;
+          if (s.materialsStored.oreMax) s.materialsStored.oreMax *= 2;
+        }
+        if (s.scrapCapacity) s.scrapCapacity *= 2;
+        if (s.cargoOreMax) s.cargoOreMax *= 2;
+      }
+    } else if (!s.factionId) {
+      s.factionId = 'KOVAK';
+    }
     if (s.role !== 'HQ' && !s.isStationary && s.role) {
       applyShipKinematics(s, s.role);
     } else if (s.maxSpeed) {
@@ -1194,7 +1213,96 @@ export function createDefaultShips(): ShipEntity[] {
     if (s.pdplaRange) s.pdplaRange *= K_SCALE;
   }
 
+  // If playing as Liaal, transform the starting lead warship to the Liaal Light Warship (20-missile salvo, 30% durability)
+  if (playerFaction === 'LIAAL' && ships[0]) {
+    const s = ships[0];
+    s.name = 'Liaal-Salvo-01';
+    s.role = 'LIAAL_LIGHT';
+    s.missilesMax = 600;
+    s.missiles = 600;
+    s.missileTubes = 20;
+    s.totalMissileSalvo = 20;
+    s.bowMissileTubes = 8;
+    s.broadsideMissileTubesPort = 6;
+    s.broadsideMissileTubesStbd = 6;
+    s.shieldHpMax = 300.0;
+    s.shieldHp = 300.0;
+    s.hullMax = 105.0;
+    s.hullHp = 105.0;
+    s.maxRepairableHull = 105.0;
+    s.crippleBarMax = 90.0;
+    s.crippleBar = 90.0;
+  } else if (playerFaction === 'KOVAK') {
+    for (const s of ships) {
+      if (s.faction === 'FRIENDLY') {
+        s.hullMax = Math.round(s.hullMax * 0.40);
+        s.hullHp = Math.round(s.hullHp * 0.40);
+        s.maxRepairableHull = s.hullMax;
+        s.crippleBarMax = Math.round(s.hullMax * 0.25);
+        s.crippleBar = s.crippleBarMax;
+        s.shieldHpMax = Math.round(s.shieldHpMax * 0.40);
+        s.shieldHp = s.shieldHpMax;
+        if (s.pdplaRange) s.pdplaRange *= 0.90;
+      }
+    }
+  }
+
+  // Apply HQ specification dynamically (modifiers, launchers, ore drop off ranges, defenses)
+  const hq = ships.find((s) => s.role === 'HQ');
+  if (hq) {
+    const effectiveHqType: HqTypeId = hqType || getDefaultHQForFaction(playerFaction);
+    applyHQDefinitionToShip(hq, effectiveHqType, playerFaction);
+  }
+
   return ships;
+}
+
+export function initializeCampaignScenario(config: GameSetupConfig): ScenarioDefinition {
+  // Hard clamp: 2 to 8 systems
+  const validatedSystemCount = Math.min(8, Math.max(2, config.systemCount || 2));
+
+  // Ensure opponents array matches validatedSystemCount - 1
+  const requiredOpponents = validatedSystemCount - 1;
+  const opponents: FactionId[] = [];
+  const fallbackPool = ALL_FACTION_IDS.filter(f => f !== config.playerFaction);
+
+  for (let i = 0; i < requiredOpponents; i++) {
+    if (config.systemOpponents && config.systemOpponents[i]) {
+      opponents.push(config.systemOpponents[i]);
+    } else {
+      opponents.push(fallbackPool[i % fallbackPool.length]);
+    }
+  }
+
+  const validatedConfig: GameSetupConfig = {
+    systemCount: validatedSystemCount,
+    playerFaction: config.playerFaction,
+    systemOpponents: opponents,
+    homeworldType: config.homeworldType,
+    hqType: config.hqType,
+  };
+
+  return createCampaignScenario(validatedConfig);
+}
+
+export function createCampaignScenario(config: GameSetupConfig): ScenarioDefinition {
+  const validatedSystemCount = Math.min(8, Math.max(2, config.systemCount || 2));
+  const effectiveHqType = config.hqType || getDefaultHQForFaction(config.playerFaction);
+  const ships = createDefaultShips(config.playerFaction, effectiveHqType);
+  const facName = FACTION_REGISTRY[config.playerFaction]?.name || config.playerFaction;
+  return {
+    id: `campaign-${config.playerFaction.toLowerCase()}-${validatedSystemCount}`,
+    name: `Campaign: ${facName} Sector Command (${validatedSystemCount} Systems)`,
+    description: `Multi-system strategic campaign commanding ${facName} fleet across ${validatedSystemCount} systems.`,
+    ships,
+    jumpGate: {
+      pos: { x: 350, y: -250 },
+      radius: 38,
+      shuttingDown: false,
+      shutdownTimer: 0,
+      maxShutdownTime: 300,
+    }
+  };
 }
 
 export const SCENARIOS: ScenarioDefinition[] = [

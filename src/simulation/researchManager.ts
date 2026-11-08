@@ -19,6 +19,8 @@ import {
   TECH_CATALOG,
   RESEARCH_CATALOG,
   STATIC_BRANCH_GRIDS,
+  getBranchGridForFaction,
+  getFactionTechCatalog,
   isTechUnlocked,
   getTechCost,
   getNodePrereqs,
@@ -47,6 +49,8 @@ export {
   TECH_CATALOG,
   RESEARCH_CATALOG,
   STATIC_BRANCH_GRIDS,
+  getBranchGridForFaction,
+  getFactionTechCatalog,
   isTechUnlocked,
   getTechCost,
   getNodePrereqs,
@@ -68,12 +72,67 @@ export const STRUCTURE_UNLOCK_REQUIREMENTS: Partial<Record<StructureType, string
  */
 export function isHullUnlocked(
   shipClass: string,
-  completedNodes?: Set<string> | string[] | null
+  completedNodes?: Set<string> | string[] | null,
+  faction?: string,
+  alliedFactions?: string[]
 ): boolean {
   if (!shipClass) return false;
-  const norm = shipClass.toUpperCase().replace(/\s+/g, '_');
+  const norm = String(shipClass || '').toUpperCase().replace(/\s+/g, '_');
+
+  // Liaal Doctrine: 3 native warships + civilian logistics + PROXY BUYING of allied faction hulls
+  if (faction === 'LIAAL') {
+    if (norm === 'MINER' || norm === 'MN' || norm === 'BUILDER' || norm === 'BLD' || norm === 'HQ') {
+      return true;
+    }
+    if (norm === 'LIAAL_LIGHT' || norm === 'L_WS' || norm === 'L-WS') {
+      return true; // Light warship unlocked at baseline for Liaal
+    }
+    if (norm === 'LIAAL_MEDIUM' || norm === 'M_WS' || norm === 'M-WS') {
+      const req = HULL_UNLOCK_REQUIREMENTS[norm] || 'mil-t4';
+      if (!completedNodes) return false;
+      return completedNodes instanceof Set
+        ? completedNodes.has(req)
+        : Array.isArray(completedNodes) ? completedNodes.includes(req) : false;
+    }
+    if (norm === 'LIAAL_HEAVY' || norm === 'H_WS' || norm === 'H-WS') {
+      const req = HULL_UNLOCK_REQUIREMENTS[norm] || 'mil-t8';
+      if (!completedNodes) return false;
+      return completedNodes instanceof Set
+        ? completedNodes.has(req)
+        : Array.isArray(completedNodes) ? completedNodes.includes(req) : false;
+    }
+    // Utility logistic hulls
+    if (norm === 'COLLIER' || norm === 'COL' || norm === 'TANKER' || norm === 'TNK' || norm === 'REPAIR' || norm === 'REP' || norm === 'SCRAP' || norm === 'SCP') {
+      const req = HULL_UNLOCK_REQUIREMENTS[norm];
+      if (!req) return true;
+      if (!completedNodes) return false;
+      return completedNodes instanceof Set
+        ? completedNodes.has(req)
+        : Array.isArray(completedNodes) ? completedNodes.includes(req) : false;
+    }
+
+    // PROXY BUY POWERS: Liaal can commission any hull unlocked by their allied factions!
+    const hasAllies = alliedFactions && alliedFactions.some(f => f !== 'LIAAL');
+    if (hasAllies) {
+      if (norm === 'FRIGATE' || norm === 'FG') return true;
+      const reqTechId = HULL_UNLOCK_REQUIREMENTS[norm];
+      if (!reqTechId) return true;
+      if (!completedNodes) return true; // If ally possesses the blueprint
+      return completedNodes instanceof Set
+        ? completedNodes.has(reqTechId)
+        : Array.isArray(completedNodes) ? completedNodes.includes(reqTechId) : false;
+    }
+
+    // Without active allies, standard combat hulls remain restricted
+    return false;
+  }
+
   // Frigate (FG) and Miner (MN) are foundational escort/utility hulls unlocked at baseline
   if (norm === 'FRIGATE' || norm === 'FG' || norm === 'MINER' || norm === 'MN') {
+    return true;
+  }
+  // Yestiri starts directly with Destroyer (DD) unlocked at baseline; Frigate does not exist
+  if (faction === 'YESTIRI' && (norm === 'DESTROYER' || norm === 'DD')) {
     return true;
   }
   const reqTechId = HULL_UNLOCK_REQUIREMENTS[norm];
@@ -143,6 +202,16 @@ export class ResearchManager {
   };
 
   /**
+   * FIFO Research Queues per branch
+   */
+  public queues: Record<ResearchBranch, string[]> = {
+    MILITARY: [],
+    CIVILIAN: [],
+    EXPANSION: [],
+    HEADQUARTERS: [],
+  };
+
+  /**
    * Flat set of completed tech node IDs for zero-allocation lookup
    */
   public completedNodes: Set<string> = new Set<string>();
@@ -153,6 +222,161 @@ export class ResearchManager {
   public getActiveProject(branch: ResearchBranch): ActiveResearchProject | null {
     if (!this.branches || !branch || !this.branches[branch]) return null;
     return this.branches[branch].activeProject ?? null;
+  }
+
+  /**
+   * Returns queued node IDs for a specific branch
+   */
+  public getQueue(branch: ResearchBranch): string[] {
+    if (!this.queues || !branch || !this.queues[branch]) return [];
+    return [...this.queues[branch]];
+  }
+
+  /**
+   * Returns a complete snapshot of all queued tech node IDs across all branches
+   */
+  public getAllQueues(): Record<ResearchBranch, string[]> {
+    return {
+      MILITARY: [...(this.queues?.MILITARY || [])],
+      CIVILIAN: [...(this.queues?.CIVILIAN || [])],
+      EXPANSION: [...(this.queues?.EXPANSION || [])],
+      HEADQUARTERS: [...(this.queues?.HEADQUARTERS || [])],
+    };
+  }
+
+  /**
+   * Checks whether a tech node is currently queued in any branch
+   */
+  public isNodeQueued(nodeId: string): boolean {
+    if (!nodeId || !this.queues) return false;
+    return (
+      (this.queues.MILITARY && this.queues.MILITARY.includes(nodeId)) ||
+      (this.queues.CIVILIAN && this.queues.CIVILIAN.includes(nodeId)) ||
+      (this.queues.EXPANSION && this.queues.EXPANSION.includes(nodeId)) ||
+      (this.queues.HEADQUARTERS && this.queues.HEADQUARTERS.includes(nodeId))
+    );
+  }
+
+  /**
+   * Returns the branch and 1-based queue position for a node
+   */
+  public getQueuePosition(nodeId: string): { branch: ResearchBranch; position: number } | null {
+    if (!nodeId || !this.queues) return null;
+    const branches: ResearchBranch[] = ['MILITARY', 'CIVILIAN', 'EXPANSION', 'HEADQUARTERS'];
+    for (const b of branches) {
+      const q = this.queues[b];
+      if (Array.isArray(q)) {
+        const idx = q.indexOf(nodeId);
+        if (idx !== -1) {
+          return { branch: b, position: idx + 1 };
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Adds a technology node to its respective branch research queue
+   */
+  public enqueueNode(
+    nodeId: string,
+    addLog?: (category: string, message: string, level?: 'info' | 'warn' | 'crit' | 'success') => void
+  ): { success: boolean; position?: number; error?: string } {
+    const node = this.getNode(nodeId);
+    if (!node) {
+      return { success: false, error: 'Unknown technology node.' };
+    }
+    if (this.isNodeCompleted(nodeId)) {
+      return { success: false, error: 'Protocol already completed.' };
+    }
+
+    const branch = node.branch || 'MILITARY';
+    if (!this.queues[branch]) {
+      this.queues[branch] = [];
+    }
+
+    // Check if already in queue
+    const existingPos = this.queues[branch].indexOf(nodeId);
+    if (existingPos !== -1) {
+      return { success: true, position: existingPos + 1 };
+    }
+
+    this.queues[branch].push(nodeId);
+    const pos = this.queues[branch].length;
+
+    const safeLog = addLog ?? (() => {});
+    safeLog(
+      'RESEARCH',
+      `📋 Queued Tier ${node.tier} [${node.branch}] Research: [${node.name}] (${node.code}) in Slot #${pos}.`,
+      'info'
+    );
+
+    return { success: true, position: pos };
+  }
+
+  /**
+   * Removes a technology node from the research queue
+   */
+  public dequeueNode(
+    nodeId: string,
+    addLog?: (category: string, message: string, level?: 'info' | 'warn' | 'crit' | 'success') => void
+  ): { success: boolean } {
+    if (!nodeId || !this.queues) return { success: false };
+    const branches: ResearchBranch[] = ['MILITARY', 'CIVILIAN', 'EXPANSION', 'HEADQUARTERS'];
+    let removed = false;
+    let targetBranch: ResearchBranch = 'MILITARY';
+
+    for (const b of branches) {
+      const q = this.queues[b];
+      if (Array.isArray(q)) {
+        const idx = q.indexOf(nodeId);
+        if (idx !== -1) {
+          q.splice(idx, 1);
+          removed = true;
+          targetBranch = b;
+          break;
+        }
+      }
+    }
+
+    if (removed) {
+      const node = this.getNode(nodeId);
+      const safeLog = addLog ?? (() => {});
+      safeLog(
+        'RESEARCH',
+        `🗑️ Removed [${node?.name || nodeId}] from ${targetBranch} Research Queue.`,
+        'info'
+      );
+    }
+
+    return { success: removed };
+  }
+
+  /**
+   * Reorders an item within a branch queue
+   */
+  public reorderQueue(branch: ResearchBranch, fromIndex: number, toIndex: number): void {
+    if (!this.queues || !this.queues[branch]) return;
+    const q = this.queues[branch];
+    if (fromIndex < 0 || fromIndex >= q.length || toIndex < 0 || toIndex >= q.length) return;
+    const [moved] = q.splice(fromIndex, 1);
+    q.splice(toIndex, 0, moved);
+  }
+
+  /**
+   * Clears queue for one or all branches
+   */
+  public clearQueue(branch?: ResearchBranch): void {
+    if (branch) {
+      if (this.queues[branch]) this.queues[branch] = [];
+    } else {
+      this.queues = {
+        MILITARY: [],
+        CIVILIAN: [],
+        EXPANSION: [],
+        HEADQUARTERS: [],
+      };
+    }
   }
 
   /**
@@ -179,10 +403,10 @@ export class ResearchManager {
   }
 
   /**
-   * Checks if a warship hull is unlocked
-   */
-  public isHullUnlocked(shipClass: string): boolean {
-    return isHullUnlocked(shipClass, this.completedNodes ?? new Set<string>());
+  * Checks if a warship hull is unlocked
+  */
+  public isHullUnlocked(shipClass: string, faction?: string, alliedFactions?: string[]): boolean {
+    return isHullUnlocked(shipClass, this.completedNodes ?? new Set<string>(), faction, alliedFactions);
   }
 
   /**
@@ -192,18 +416,83 @@ export class ResearchManager {
     return isStructureUnlocked(structureType, this.completedNodes ?? new Set<string>());
   }
 
+  public isNodeCompleted(nodeId: string): boolean {
+    return this.completedNodes ? this.completedNodes.has(nodeId) : false;
+  }
+
+  /**
+   * Instantly marks a node as completed in both the global set and branch state
+   */
+  public completeNode(nodeId: string): void {
+    const node = this.getNode(nodeId) || RESEARCH_CATALOG[nodeId];
+    if (!node) return;
+
+    if (!this.completedNodes) {
+      this.completedNodes = new Set<string>();
+    }
+    this.completedNodes.add(node.id);
+
+    if (node.id === 'exp-t1') this.completedNodes.add('EXP_TERRAN_COLONIZATION');
+    else if (node.id === 'exp-t2-desert') this.completedNodes.add('EXP_DESERT_COLONIZATION');
+    else if (node.id === 'exp-t3-ice') this.completedNodes.add('EXP_ICE_COLONIZATION');
+    else if (node.id === 'exp-t4-volcanic') this.completedNodes.add('EXP_VOLCANIC_COLONIZATION');
+    else if (node.id === 'exp-t6-barren') this.completedNodes.add('EXP_BARREN_COLONIZATION');
+    else if (node.id === 'exp-t7') this.completedNodes.add('EXP_OCEANIC_COLONIZATION');
+    else if (node.id === 'exp-t5-gas') this.completedNodes.add('EXP_GAS_GIANT_HARVESTING');
+
+    const branch = node.branch as ResearchBranch;
+    const bState = this.branches?.[branch];
+    if (bState) {
+      if (!bState.completedNodeIds.includes(node.id)) {
+        bState.completedNodeIds.push(node.id);
+      }
+      if (bState.activeProject?.nodeId === node.id) {
+        bState.activeProject = null;
+      }
+    }
+
+    const q = this.queues?.[branch];
+    if (Array.isArray(q)) {
+      const idx = q.indexOf(node.id);
+      if (idx !== -1) q.splice(idx, 1);
+    }
+  }
+
+  /**
+   * Instantly completes all nodes in a branch or the entire tech catalog
+   */
+  public completeAll(targetBranch?: ResearchBranch | 'ALL', faction: string = 'NOVAN'): void {
+    const catalog = getFactionTechCatalog(faction);
+    const pool = [...TECH_CATALOG, ...catalog];
+    const seen = new Set<string>();
+
+    for (const node of pool) {
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      if (targetBranch && targetBranch !== 'ALL' && node.branch !== targetBranch) {
+        continue;
+      }
+      this.completeNode(node.id);
+    }
+  }
+
   /**
    * Returns a set of all unlocked hull roles and codes
    */
-  public getUnlockedHulls(): Set<string> {
-    const set = new Set<string>(['FRIGATE', 'FG', 'MINER', 'MN']);
+  public getUnlockedHulls(faction?: string): Set<string> {
+    const set = faction === 'YESTIRI'
+      ? new Set<string>(['DESTROYER', 'DD', 'MINER', 'MN'])
+      : new Set<string>(['FRIGATE', 'FG', 'MINER', 'MN']);
     const completed = this.completedNodes ?? new Set<string>();
     if (completed.has('mil-t1')) { set.add('DESTROYER'); set.add('DD'); }
     if (completed.has('mil-t2')) { set.add('LIGHT_CRUISER'); set.add('CL'); }
     if (completed.has('mil-t4')) { set.add('HEAVY_CRUISER'); set.add('CH'); }
     if (completed.has('mil-t6')) { set.add('BATTLECRUISER'); set.add('BC'); }
     if (completed.has('mil-t8')) { set.add('BATTLESHIP'); set.add('BB'); }
-    if (completed.has('mil-t10')) { set.add('DREADNOUGHT'); set.add('DN'); }
+    if (completed.has('mil-t10')) {
+      set.add('DREADNOUGHT'); set.add('DN');
+      set.add('CITY_SHIP'); set.add('CS');
+    }
     return set;
   }
 
@@ -342,6 +631,17 @@ export class ResearchManager {
       };
     }
 
+    // 2.5. Check if currently queued in this branch
+    if (this.isNodeQueued(node.id)) {
+      const qPos = this.getQueuePosition(node.id);
+      return {
+        status: 'QUEUED',
+        reason: `QUEUED: Slot #${qPos?.position || 1} in ${branchKey} Research Queue`,
+        progressRatio: 0,
+        remainingSeconds: (node.totalTicks ?? 300) / 30.0,
+      };
+    }
+
     // 3. Node Prerequisites Gate
     if (node.prereqs && node.prereqs.length > 0) {
       for (const reqId of node.prereqs) {
@@ -372,7 +672,9 @@ export class ResearchManager {
     const requiredCapacity = isHQ ? (node.tier ?? 1) * 3 : (node.tier ?? 1);
     if (branchCapacity < requiredCapacity) {
       const stationName = isHQ
-        ? 'HQ Research Tokens'
+        ? (node.id === 'HQ_BUILDINGS_EXPANSION'
+            ? 'Research Orbital Pods mounted on City Ship HQ'
+            : 'HQ Research Tokens')
         : branchKey === 'MILITARY'
         ? 'Military Research Station [MRS]'
         : branchKey === 'CIVILIAN'
@@ -382,7 +684,9 @@ export class ResearchManager {
       return {
         status: 'LOCKED',
         reason: isHQ
-          ? `REQUIRES: ${requiredCapacity} HQ Research Tokens (${branchCapacity}/${requiredCapacity} generated across all labs)`
+          ? (node.id === 'HQ_BUILDINGS_EXPANSION'
+              ? `REQUIRES: 3 Research Orbital Pods mounted on City Ship HQ (${branchCapacity}/3 active)`
+              : `REQUIRES: ${requiredCapacity} HQ Research Tokens (${branchCapacity}/${requiredCapacity} generated across all labs)`)
           : `REQUIRES: Tier ${requiredCapacity} ${stationName} (${branchCapacity}/${requiredCapacity} active)`,
         progressRatio: 0,
         remainingSeconds: (node.totalTicks ?? 300) / 30.0,
@@ -450,6 +754,18 @@ export class ResearchManager {
     if (status === 'RESEARCHING' || status === 'PAUSED_LACKING_CAPACITY') {
       return { success: false, error: 'Technology already in active synthesis matrix.' };
     }
+    if (status === 'QUEUED') {
+      // Toggle off / remove from queue
+      this.dequeueNode(nodeId, safeLog);
+      return { success: true };
+    }
+
+    // If branch is currently busy researching another project, add to research queue!
+    const branchState = this.branches?.[node.branch];
+    if (branchState && branchState.activeProject) {
+      return this.enqueueNode(nodeId, safeLog);
+    }
+
     if (status === 'LOCKED') {
       return { success: false, error: reason || 'Technology locked.' };
     }
@@ -507,6 +823,12 @@ export class ResearchManager {
     refundResources?: (metallic: number, organic: number) => void,
     addLog?: (category: string, message: string, level?: 'info' | 'warn' | 'crit' | 'success') => void
   ): { success: boolean; error?: string } {
+    // If the requested target is currently queued, remove from queue directly!
+    if (this.isNodeQueued(branchOrNodeId)) {
+      this.dequeueNode(branchOrNodeId, addLog);
+      return { success: true };
+    }
+
     let branch: ResearchBranch | null = null;
     const upper = (branchOrNodeId || '').toUpperCase();
     if (upper === 'MILITARY' || upper === 'CIVILIAN' || upper === 'EXPANSION' || upper === 'HEADQUARTERS') {
@@ -564,14 +886,83 @@ export class ResearchManager {
     dt: number,
     stations: ResearchStationsCountSnapshot,
     addLog: (category: string, message: string, level?: 'info' | 'warn' | 'crit' | 'success') => void,
-    onNodeCompleted?: (node: TechNodeDefinition) => void
+    onNodeCompleted?: (node: TechNodeDefinition) => void,
+    hqResources?: { metallic: number; organic: number } | null,
+    deductResources?: (metallic: number, organic: number) => void
   ): void {
     const branches: ResearchBranch[] = ['MILITARY', 'CIVILIAN', 'EXPANSION', 'HEADQUARTERS'];
 
     for (const b of branches) {
       const branchState = this.branches[b];
       const project = branchState.activeProject;
-      if (!project) continue;
+      if (!project) {
+        // If idle, check queue to launch next eligible project automatically
+        const q = this.queues[b];
+        if (Array.isArray(q) && q.length > 0) {
+          while (q.length > 0) {
+            const candidateId = q[0];
+            const candNode = this.getNode(candidateId);
+            if (!candNode || this.isNodeCompleted(candidateId)) {
+              q.shift();
+              continue;
+            }
+
+            let prereqsMet = true;
+            if (candNode.prereqs && candNode.prereqs.length > 0) {
+              for (const rId of candNode.prereqs) {
+                if (!this.isNodeCompleted(rId)) {
+                  prereqsMet = false;
+                  break;
+                }
+              }
+            }
+            if (!prereqsMet) break;
+
+            const isHQ = b === 'HEADQUARTERS';
+            const candReqCap = isHQ ? candNode.tier * 3 : candNode.tier;
+            const curCap = this.getStationCapacity(b, stations);
+            if (curCap < candReqCap) break;
+
+            const costM = candNode.costMetallic ?? candNode.costM ?? 0;
+            const costO = candNode.costOrganic ?? candNode.costO ?? 0;
+            const availM = hqResources?.metallic ?? 0;
+            const availO = hqResources?.organic ?? 0;
+
+            if (hqResources && (availM < costM || availO < costO)) {
+              break;
+            }
+
+            q.shift();
+            if (deductResources) {
+              deductResources(costM, costO);
+            } else if (hqResources) {
+              hqResources.metallic -= costM;
+              hqResources.organic -= costO;
+            }
+
+            branchState.activeProject = {
+              nodeId: candNode.id,
+              branch: candNode.branch,
+              tier: candNode.tier,
+              currentTicks: 0,
+              totalTicks: candNode.totalTicks || 300,
+              status: 'RESEARCHING',
+              costPaidM: costM,
+              costPaidO: costO,
+              costM,
+              costO,
+            };
+
+            addLog(
+              'RESEARCH',
+              `🚀 Commencing Queued Tier ${candNode.tier} [${candNode.branch}] Research: [${candNode.name}] (${candNode.code}). Paid upfront: -${costM.toLocaleString()} M / -${costO.toLocaleString()} O. ETA: ${(candNode.totalTicks / 30.0).toFixed(1)}s`,
+              'success'
+            );
+            break;
+          }
+        }
+        continue;
+      }
 
       const node = this.getNode(project.nodeId);
       if (!node) {
@@ -650,6 +1041,72 @@ export class ResearchManager {
         );
 
         onNodeCompleted?.(node);
+
+        // Automatic Queue Progression: Launch next queued item if ready
+        const q = this.queues[b];
+        if (Array.isArray(q) && q.length > 0) {
+          while (q.length > 0) {
+            const candidateId = q[0];
+            const candNode = this.getNode(candidateId);
+            if (!candNode || this.isNodeCompleted(candidateId)) {
+              q.shift();
+              continue;
+            }
+
+            let prereqsMet = true;
+            if (candNode.prereqs && candNode.prereqs.length > 0) {
+              for (const rId of candNode.prereqs) {
+                if (!this.isNodeCompleted(rId)) {
+                  prereqsMet = false;
+                  break;
+                }
+              }
+            }
+            if (!prereqsMet) break;
+
+            const candReqCap = isHQ ? candNode.tier * 3 : candNode.tier;
+            const curCap = this.getStationCapacity(b, stations);
+            if (curCap < candReqCap) break;
+
+            const costM = candNode.costMetallic ?? candNode.costM ?? 0;
+            const costO = candNode.costOrganic ?? candNode.costO ?? 0;
+            const availM = hqResources?.metallic ?? 0;
+            const availO = hqResources?.organic ?? 0;
+
+            if (hqResources && (availM < costM || availO < costO)) {
+              addLog('RESEARCH', `⚠️ Queued Research [${candNode.name}] waiting for resources (${costM.toLocaleString()} M, ${costO.toLocaleString()} O).`, 'warn');
+              break;
+            }
+
+            q.shift();
+            if (deductResources) {
+              deductResources(costM, costO);
+            } else if (hqResources) {
+              hqResources.metallic -= costM;
+              hqResources.organic -= costO;
+            }
+
+            branchState.activeProject = {
+              nodeId: candNode.id,
+              branch: candNode.branch,
+              tier: candNode.tier,
+              currentTicks: 0,
+              totalTicks: candNode.totalTicks || 300,
+              status: 'RESEARCHING',
+              costPaidM: costM,
+              costPaidO: costO,
+              costM,
+              costO,
+            };
+
+            addLog(
+              'RESEARCH',
+              `🚀 Commencing Queued Tier ${candNode.tier} [${candNode.branch}] Research: [${candNode.name}] (${candNode.code}). Paid upfront: -${costM.toLocaleString()} M / -${costO.toLocaleString()} O. ETA: ${(candNode.totalTicks / 30.0).toFixed(1)}s`,
+              'success'
+            );
+            break;
+          }
+        }
       }
     }
   }
@@ -659,6 +1116,7 @@ export class ResearchManager {
    */
   public reset(): void {
     this.completedNodes.clear();
+    this.clearQueue();
     this.branches = {
       MILITARY: { activeProject: null, completedNodeIds: [] },
       CIVILIAN: { activeProject: null, completedNodeIds: [] },
@@ -704,6 +1162,45 @@ export function queueResearchNode(nodeId: string, state: GameState | any): boole
 
   const rawBranch = node.branch.toLowerCase();
   const branchKey = rawBranch === 'civilian' ? 'civic' : rawBranch; // 'military' | 'civic' | 'expansion' | 'headquarters'
+
+  // Free Research Cheat Hook: Complete instantly with 0 cost and bypass all requirements
+  if (state.debugState?.freeResearch || (state as any).state?.debugState?.freeResearch) {
+    if (!state.research) {
+      state.research = { completedTechIds: [], activeTechId: null, progress: 0 };
+    }
+    if (!state.research.completedTechIds.includes(nodeId)) {
+      state.research.completedTechIds.push(nodeId);
+    }
+    state.research.activeTechId = null;
+    state.research.progress = 0;
+
+    applyTechnologyUnlocks(nodeId, state);
+
+    const upperBranch = node.branch as ResearchBranch;
+    if (state.researchManager?.branches?.[upperBranch]) {
+      state.researchManager.branches[upperBranch].activeProject = null;
+      if (!state.researchManager.branches[upperBranch].completedNodeIds.includes(nodeId)) {
+        state.researchManager.branches[upperBranch].completedNodeIds.push(nodeId);
+      }
+    }
+
+    if (state.activeResearch) {
+      state.activeResearch[branchKey] = null;
+      if (branchKey === 'civic') {
+        state.activeResearch['civilian'] = null;
+      }
+    }
+
+    if (typeof state.addLog === 'function') {
+      state.addLog(
+        'RESEARCH',
+        `⚡ INSTANT RESEARCH COMPLETE [FREE CHEAT]: [${node.name}] synthesized at 0 cost!`,
+        'success'
+      );
+    }
+    return true;
+  }
+
   const labs = getOperationalLabCounts(state);
 
   const requiredLabs = (node as any).requiredLabs ?? node.tier;
@@ -816,6 +1313,12 @@ export function applyTechnologyUnlocks(nodeId: string, state: GameState | any): 
   else if (nodeId === 'exp-t6-barren') addBonus('EXP_BARREN_COLONIZATION');
   else if (nodeId === 'exp-t7') addBonus('EXP_OCEANIC_COLONIZATION');
   else if (nodeId === 'exp-t5-gas') addBonus('EXP_GAS_GIANT_HARVESTING');
+  else if (nodeId === 'HQ_BUILDINGS_EXPANSION') {
+    const hq = (state.ships || []).find((s: any) => s.role === 'HQ');
+    if (hq) {
+      hq.maxMountedModules = 6;
+    }
+  }
 
   state.unlockedTechs = newUnlocked;
 

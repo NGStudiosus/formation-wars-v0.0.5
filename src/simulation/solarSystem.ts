@@ -13,8 +13,14 @@ import {
   GalaxyConfiguration,
   MoonEntity,
   Vec2D,
+  HomeworldTypeId,
+  FactionId,
 } from '../types';
-import { createAsteroid } from './asteroids';
+import {
+  HOMEWORLD_REGISTRY,
+  getDefaultHomeworldForFaction,
+} from './hqRegistry';
+import { createAsteroid, generateAsteroidFacets } from './asteroids';
 import {
   K_SCALE,
   CELESTIAL_SCALE,
@@ -213,10 +219,17 @@ export function getLunarGravityWellRadius(
 }
 
 export function getClusterGravityWellRadius(
-  _clusterOrRadius?: AsteroidCluster | number,
+  clusterOrRadius?: AsteroidCluster | number,
   _memberCount?: number
 ): number {
-  return FIXED_ASTEROID_CLUSTER_WELL_RADIUS;
+  if (typeof clusterOrRadius === 'object' && clusterOrRadius !== null) {
+    const r = clusterOrRadius.radius || clusterOrRadius.wellRadius || 2200;
+    return Math.round(r * 1.10);
+  }
+  if (typeof clusterOrRadius === 'number' && clusterOrRadius > 0) {
+    return Math.round(clusterOrRadius * 1.10);
+  }
+  return Math.round(2200 * 1.10);
 }
 
 /**
@@ -275,9 +288,16 @@ export function stepPlanetKinematics(planet: RockyPlanet | GasGiant, dt: number)
   const ox = (planet as any).systemCenter?.x ?? 0;
   const oy = (planet as any).systemCenter?.y ?? 0;
 
-  planet.orbitalAngle = (planet.orbitalAngle + planet.orbitalSpeed * dt) % (Math.PI * 2);
-  planet.pos.x = ox + Math.cos(planet.orbitalAngle) * planet.orbitalRadius;
-  planet.pos.y = oy + Math.sin(planet.orbitalAngle) * planet.orbitalRadius;
+  const currentAngle = planet.orbitalAngle ?? (planet as any).orbitAngle ?? 0;
+  const currentSpeed = planet.orbitalSpeed ?? (planet as any).orbitSpeed ?? 0;
+  const currentRadius = planet.orbitalRadius ?? (planet as any).orbitRadius ?? 0;
+
+  planet.orbitalAngle = (currentAngle + currentSpeed * dt) % (Math.PI * 2);
+  (planet as any).orbitAngle = planet.orbitalAngle;
+  planet.pos.x = ox + Math.cos(planet.orbitalAngle) * currentRadius;
+  planet.pos.y = oy + Math.sin(planet.orbitalAngle) * currentRadius;
+  if ((planet as any).x !== undefined) (planet as any).x = planet.pos.x;
+  if ((planet as any).y !== undefined) (planet as any).y = planet.pos.y;
 
   if (planet.moons) {
     for (const moon of planet.moons) {
@@ -300,44 +320,60 @@ export function stepMoonKinematics(moon: MoonEntity, parent: RockyPlanet | GasGi
   moon.pos.y = parent.pos.y + Math.sin(moon.orbitalAngle) * moon.orbitalRadius;
 }
 
+const PERSISTENT_CLUSTER_MAP = new Map<string, AsteroidCluster>();
+
 /**
- * Updates dynamic orbital revolution of asteroid clusters and belt nodes around the central star
+ * Updates dynamic orbital revolution of asteroid clusters around the central star.
+ * Uses persistent cluster map to eliminate per-tick Map allocations and linear rescans.
  */
 export function stepAsteroidBeltKinematics(
   clusters: AsteroidCluster[],
   asteroids: AsteroidEntity[],
   dt: number
 ): void {
-  if (!ORBITAL_CONFIG.asteroidBeltClusters || dt <= 0) return;
+  if (!ORBITAL_CONFIG.asteroidBeltClusters || dt <= 0 || !clusters) return;
 
   // 1. Advance clusters along their Keplerian orbital path around the star
-  for (const cluster of clusters) {
+  for (let i = 0; i < clusters.length; i++) {
+    const cluster = clusters[i];
     const ox = (cluster as any).systemCenter?.x ?? 0;
     const oy = (cluster as any).systemCenter?.y ?? 0;
     cluster.orbitalAngle = (cluster.orbitalAngle + cluster.orbitalSpeed * dt) % (Math.PI * 2);
-    cluster.center.x = ox + Math.cos(cluster.orbitalAngle) * cluster.orbitalRadius;
-    cluster.center.y = oy + Math.sin(cluster.orbitalAngle) * cluster.orbitalRadius;
+    const cosA = Math.cos(cluster.orbitalAngle);
+    const sinA = Math.sin(cluster.orbitalAngle);
+    cluster.center.x = ox + cosA * cluster.orbitalRadius;
+    cluster.center.y = oy + sinA * cluster.orbitalRadius;
+    (cluster as any)._cosA = cosA;
+    (cluster as any)._sinA = sinA;
     cluster.velocity = {
-      x: -Math.sin(cluster.orbitalAngle) * cluster.orbitalSpeed * cluster.orbitalRadius,
-      y: Math.cos(cluster.orbitalAngle) * cluster.orbitalSpeed * cluster.orbitalRadius,
+      x: -sinA * cluster.orbitalSpeed * cluster.orbitalRadius,
+      y: cosA * cluster.orbitalSpeed * cluster.orbitalRadius,
     };
+    PERSISTENT_CLUSTER_MAP.set(cluster.id, cluster);
   }
+}
 
-  // 2. Synchronize member asteroids and solitary asteroids
-  const clusterMap = new Map<string, AsteroidCluster>();
-  for (const c of clusters) {
-    clusterMap.set(c.id, c);
-  }
-
-  for (const ast of asteroids) {
-    if (ast.clusterId && clusterMap.has(ast.clusterId)) {
-      const parentCluster = clusterMap.get(ast.clusterId)!;
-      if (ast.clusterOffset) {
-        // Co-rotate with cluster around the star: all asteroids within the cluster orbit locked to the cluster focal point!
-        const cosA = Math.cos(parentCluster.orbitalAngle);
-        const sinA = Math.sin(parentCluster.orbitalAngle);
-        ast.pos.x = parentCluster.center.x + (ast.clusterOffset.x * cosA - ast.clusterOffset.y * sinA);
-        ast.pos.y = parentCluster.center.y + (ast.clusterOffset.x * sinA + ast.clusterOffset.y * cosA);
+/**
+ * Single-pass asteroid position synchronization across all systems with zero allocations.
+ */
+export function syncAllAsteroidsKinematics(asteroids: AsteroidEntity[], dt: number): void {
+  if (!asteroids || asteroids.length === 0 || dt <= 0) return;
+  const astLen = asteroids.length;
+  for (let i = 0; i < astLen; i++) {
+    const ast = asteroids[i];
+    if (ast.clusterId) {
+      let parentCluster = (ast as any)._parentCluster;
+      if (!parentCluster || parentCluster.id !== ast.clusterId) {
+        parentCluster = PERSISTENT_CLUSTER_MAP.get(ast.clusterId);
+        (ast as any)._parentCluster = parentCluster;
+      }
+      if (parentCluster && ast.clusterOffset) {
+        const cosA = (parentCluster as any)._cosA;
+        const sinA = (parentCluster as any)._sinA;
+        if (cosA !== undefined && sinA !== undefined) {
+          ast.pos.x = parentCluster.center.x + (ast.clusterOffset.x * cosA - ast.clusterOffset.y * sinA);
+          ast.pos.y = parentCluster.center.y + (ast.clusterOffset.x * sinA + ast.clusterOffset.y * cosA);
+        }
       }
     } else if (!ast.isAmbient && ast.orbitalRadius && ast.orbitalSpeed) {
       // Solitary rogue asteroid orbital revolution
@@ -347,14 +383,15 @@ export function stepAsteroidBeltKinematics(
       ast.pos.x = ox + Math.cos(ast.orbitalAngle) * ast.orbitalRadius;
       ast.pos.y = oy + Math.sin(ast.orbitalAngle) * ast.orbitalRadius;
     }
-    // Ambient ring asteroids (isAmbient: true) maintain static spatial coordinates relative to the system center
   }
 }
 
 export function generateIndependentSystem(
   systemIndex: number,
   origin: { x: number; y: number },
-  isPlayerHome: boolean
+  isPlayerHome: boolean,
+  factionId?: string,
+  homeworldTypeParam?: HomeworldTypeId
 ): StarSystemDescriptor {
   const systemId = `SYS_${systemIndex + 1}`;
   const planets: PlanetEntity[] = [];
@@ -372,12 +409,23 @@ export function generateIndependentSystem(
     const orbitR = Math.round(baseOrbit + orbitJitter);
     const angle = Math.random() * Math.PI * 2;
     const isHabitable = (p === habitableIndex);
+    const isPrimaryHabitable = isHabitable && isPlayerHome;
+
+    const resolvedHomeworldType: HomeworldTypeId = homeworldTypeParam ||
+      (factionId ? getDefaultHomeworldForFaction(factionId as FactionId) : 'TERRAN');
+    const hwDef = isPrimaryHabitable ? HOMEWORLD_REGISTRY[resolvedHomeworldType] : null;
 
     planets.push({
       id: `${systemId}_PLANET_${p + 1}`,
       systemId,
-      name: `Sector ${systemIndex + 1} Planet ${String.fromCharCode(65 + p)}`,
+      name: hwDef
+        ? hwDef.defaultPlanetName
+        : isHabitable
+        ? (isPlayerHome ? 'Aegis-IV' : 'Verdant-Prime')
+        : `Sector ${systemIndex + 1} Planet ${String.fromCharCode(65 + p)}`,
       type: 'ROCKY',
+      planetClass: hwDef ? hwDef.planetClass : undefined,
+      planetType: hwDef ? hwDef.planetClass : undefined,
       isHabitable,
       isHydrogenRich: false,
       orbitRadius: orbitR,
@@ -391,13 +439,18 @@ export function generateIndependentSystem(
       gravityWellRadius: isHabitable ? 2400 : (1900 + Math.random() * 600),
       wellRadius: isHabitable ? 2400 : (1900 + Math.random() * 600),
       wellRadiusSq: Math.pow(isHabitable ? 2400 : (1900 + Math.random() * 600), 2),
-      surfaceGravity: isHabitable ? 1.0 : (0.45 + Math.random() * 0.85),
-      gravityRating: isHabitable ? 1.0 : (0.45 + Math.random() * 0.85),
+      surfaceGravity: hwDef ? hwDef.gravityRating : (isHabitable ? 1.0 : (0.45 + Math.random() * 0.85)),
+      gravityRating: hwDef ? hwDef.gravityRating : (isHabitable ? 1.0 : (0.45 + Math.random() * 0.85)),
       habitable: isHabitable,
-      isPrimaryHabitable: isHabitable && isPlayerHome,
-      baseColor: isHabitable ? '#22c55e' : '#a8a29e',
-      oceanColor: isHabitable ? '#3b82f6' : undefined,
-      surfacePatternSeed: Math.floor(Math.random() * 10000),
+      isPrimaryHabitable,
+      isHomeworld: isPrimaryHabitable,
+      hasHQ: isPrimaryHabitable,
+      colonized: isPrimaryHabitable,
+      colonyGovernance: isPrimaryHabitable,
+      baseColor: hwDef ? hwDef.baseColor : (isHabitable ? '#22c55e' : '#a8a29e'),
+      oceanColor: hwDef ? hwDef.oceanColor : (isHabitable ? '#3b82f6' : undefined),
+      atmosphereColor: hwDef ? hwDef.atmosphereColor : undefined,
+      surfacePatternSeed: hwDef ? hwDef.surfacePatternSeed : Math.floor(Math.random() * 10000),
       moons: [],
     });
   }
@@ -425,13 +478,17 @@ export function generateIndependentSystem(
       const size: 'SMALL' | 'MEDIUM' | 'LARGE' = sizeRoll < 0.5 ? 'SMALL' : sizeRoll < 0.85 ? 'MEDIUM' : 'LARGE';
       const maxOre = size === 'SMALL' ? 1000 : size === 'MEDIUM' ? 3500 : 9000;
 
+      const astId = `${systemId}_AST_${++asteroidSeq}`;
+      const rad = size === 'SMALL' ? 60 : size === 'MEDIUM' ? 140 : 260;
+      const { vertices, craters } = generateAsteroidFacets(rad, astId);
+
       const node: AsteroidNode = {
-        id: `${systemId}_AST_${++asteroidSeq}`,
+        id: astId,
         systemId,
         clusterId,
         x: clusterCenter.x + Math.cos(offsetAngle) * offsetDist,
         y: clusterCenter.y + Math.sin(offsetAngle) * offsetDist,
-        radius: size === 'SMALL' ? 60 : size === 'MEDIUM' ? 140 : 260,
+        radius: rad,
         size,
         oreRemaining: maxOre,
         maxOre,
@@ -440,19 +497,26 @@ export function generateIndependentSystem(
         position: { x: clusterCenter.x + Math.cos(offsetAngle) * offsetDist, y: clusterCenter.y + Math.sin(offsetAngle) * offsetDist },
         tier: size,
         remainingOre: maxOre,
+        vertices,
+        facets: vertices,
+        craters,
+        rotation: Math.random() * Math.PI * 2,
+        rotationSpeed: (Math.random() - 0.5) * 0.08,
       };
       clusterNodes.push(node);
       asteroids.push(node);
     }
 
+    const clusterRad = 2200;
+    const wellRad = Math.round(clusterRad * 1.10);
     clusters.push({
       id: clusterId,
       systemId,
       name: `Belt Cluster ${c + 1}`,
       center: clusterCenter,
-      radius: 2200,
-      gravityWellRadius: 2800,
-      wellRadius: 2800,
+      radius: clusterRad,
+      gravityWellRadius: wellRad,
+      wellRadius: wellRad,
       asteroidIds: clusterNodes.map(n => n.id),
       isMoorable: true,
       isAsteroidCluster: true,
@@ -467,14 +531,17 @@ export function generateIndependentSystem(
     const sizeRoll = Math.random();
     const size: 'SMALL' | 'MEDIUM' | 'LARGE' = sizeRoll < 0.55 ? 'SMALL' : sizeRoll < 0.85 ? 'MEDIUM' : 'LARGE';
     const maxOre = size === 'SMALL' ? 1000 : size === 'MEDIUM' ? 3500 : 9000;
+    const astId = `${systemId}_AST_${++asteroidSeq}`;
+    const rad = size === 'SMALL' ? 60 : size === 'MEDIUM' ? 140 : 260;
+    const { vertices, craters } = generateAsteroidFacets(rad, astId);
 
     asteroids.push({
-      id: `${systemId}_AST_${++asteroidSeq}`,
+      id: astId,
       systemId,
       // No clusterId (indicates loose belt node)
       x: origin.x + Math.cos(angle) * dist,
       y: origin.y + Math.sin(angle) * dist,
-      radius: size === 'SMALL' ? 60 : size === 'MEDIUM' ? 140 : 260,
+      radius: rad,
       size,
       oreRemaining: maxOre,
       maxOre,
@@ -483,6 +550,11 @@ export function generateIndependentSystem(
       position: { x: origin.x + Math.cos(angle) * dist, y: origin.y + Math.sin(angle) * dist },
       tier: size,
       remainingOre: maxOre,
+      vertices,
+      facets: vertices,
+      craters,
+      rotation: Math.random() * Math.PI * 2,
+      rotationSpeed: (Math.random() - 0.5) * 0.08,
     });
   }
 
@@ -498,9 +570,11 @@ export function generateIndependentSystem(
     const ax = origin.x + Math.cos(angle) * dist;
     const ay = origin.y + Math.sin(angle) * dist;
     const rad = size === 'SMALL' ? 60 : size === 'MEDIUM' ? 140 : 260;
+    const astId = `${systemId}_AST_${++asteroidSeq}`;
+    const { vertices, craters } = generateAsteroidFacets(rad, astId);
 
     asteroids.push({
-      id: `${systemId}_AST_${++asteroidSeq}`,
+      id: astId,
       systemId,
       x: ax,
       y: ay,
@@ -513,6 +587,11 @@ export function generateIndependentSystem(
       position: { x: ax, y: ay },
       tier: size,
       remainingOre: maxOre,
+      vertices,
+      facets: vertices,
+      craters,
+      rotation: Math.random() * Math.PI * 2,
+      rotationSpeed: (Math.random() - 0.5) * 0.08,
     });
   }
 
@@ -538,6 +617,9 @@ export function generateIndependentSystem(
       orbitRadius: orbitR,
       orbitAngle: angle,
       orbitSpeed: 0.00015 / Math.sqrt(orbitR / 10000),
+      orbitalRadius: orbitR,
+      orbitalAngle: angle,
+      orbitalSpeed: 0.00015 / Math.sqrt(orbitR / 10000),
       x: gx,
       y: gy,
       pos: { x: gx, y: gy },
@@ -576,10 +658,12 @@ export function generateIndependentSystem(
       const maxOre = size === 'SMALL' ? 1000 : size === 'MEDIUM' ? 3500 : 9000;
       const ax = clusterCenter.x + Math.cos(offsetAngle) * offsetDist;
       const ay = clusterCenter.y + Math.sin(offsetAngle) * offsetDist;
+      const astId = `${systemId}_AST_${++asteroidSeq}`;
       const rad = size === 'SMALL' ? 60 : size === 'MEDIUM' ? 140 : 260;
+      const { vertices, craters } = generateAsteroidFacets(rad, astId);
 
       const node: AsteroidNode = {
-        id: `${systemId}_AST_${++asteroidSeq}`,
+        id: astId,
         systemId,
         clusterId,
         x: ax,
@@ -593,19 +677,26 @@ export function generateIndependentSystem(
         position: { x: ax, y: ay },
         tier: size,
         remainingOre: maxOre,
+        vertices,
+        facets: vertices,
+        craters,
+        rotation: Math.random() * Math.PI * 2,
+        rotationSpeed: (Math.random() - 0.5) * 0.08,
       };
       clusterAsteroids.push(node);
       asteroids.push(node);
     }
 
+    const outerClusterRad = 2000;
+    const outerWellRad = Math.round(outerClusterRad * 1.10);
     clusters.push({
       id: clusterId,
       systemId,
       name: `Outer Cluster ${s + 1}`,
       center: clusterCenter,
-      radius: 2000,
-      gravityWellRadius: 2800,
-      wellRadius: 2800,
+      radius: outerClusterRad,
+      gravityWellRadius: outerWellRad,
+      wellRadius: outerWellRad,
       asteroidIds: clusterAsteroids.map(n => n.id),
       isMoorable: true,
       isAsteroidCluster: true,
@@ -655,7 +746,8 @@ export function generateIndependentSystem(
 }
 
 export function generateGalaxy(
-  systemCountOrConfig: number | { systemCount?: number; [key: string]: any } = 3
+  systemCountOrConfig: number | { systemCount?: number; factionId?: string; [key: string]: any } = 3,
+  factionIdParam?: string
 ): {
   systems: StarSystemDescriptor[];
   allPlanets: PlanetEntity[];
@@ -668,6 +760,8 @@ export function generateGalaxy(
     typeof systemCountOrConfig === 'number'
       ? systemCountOrConfig
       : systemCountOrConfig?.systemCount ?? 3;
+  const factionId = factionIdParam || (typeof systemCountOrConfig === 'object' ? systemCountOrConfig.factionId : undefined);
+  const homeworldType = (typeof systemCountOrConfig === 'object' ? systemCountOrConfig.homeworldType : undefined);
 
   const systems: StarSystemDescriptor[] = [];
   const allPlanets: PlanetEntity[] = [];
@@ -682,7 +776,7 @@ export function generateGalaxy(
       x: Math.round(Math.cos(angle) * radius),
       y: Math.round(Math.sin(angle) * radius)
     };
-    const sys = generateIndependentSystem(i, origin, i === 0);
+    const sys = generateIndependentSystem(i, origin, i === 0, i === 0 ? factionId : undefined, i === 0 ? homeworldType : undefined);
     systems.push(sys);
     allPlanets.push(...sys.planets);
     allClusters.push(...sys.clusters);
@@ -1007,8 +1101,8 @@ export function generateProceduralSolarSystem(
       orbitalSpeed: clusterOrbitalSpeed,
       radius: clusterEnvelope,
       envelopeRadius: clusterEnvelope,
-      wellRadius: FIXED_ASTEROID_CLUSTER_WELL_RADIUS, // Fixed 1,800 km capture zone (exempt from dynamic scaling)
-      gravityWellRadius: FIXED_ASTEROID_CLUSTER_WELL_RADIUS,
+      wellRadius: wellRadius,
+      gravityWellRadius: wellRadius,
       isMoorable: true,
       isAsteroidCluster: true,
       baseRadiusPerNode: BASE_RADIUS_PER_CLUSTER_NODE,

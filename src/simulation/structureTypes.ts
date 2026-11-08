@@ -62,7 +62,7 @@ export interface ShipyardStructureDefinition {
 export const SHIPYARD_CAPABILITIES = {
   SY_LIGHT: ['MINER', 'MN', 'FG', 'FRIGATE', 'DD', 'DESTROYER', 'CL', 'LIGHT_CRUISER'],
   SY_MEDIUM: ['CH', 'HEAVY_CRUISER', 'BC', 'BATTLECRUISER', 'REP_SHIP', 'REPAIR', 'REP', 'COLLIER', 'COL', 'TANKER', 'TNK', 'SALVAGER', 'SCRAP', 'SCP'],
-  SY_HEAVY: ['BB', 'BATTLESHIP', 'DN', 'DREADNOUGHT', 'CVE', 'CV', 'CARRIER', 'CVF', 'SUPER_CARRIER'],
+  SY_HEAVY: ['BB', 'BATTLESHIP', 'DN', 'DREADNOUGHT', 'CVE', 'CV', 'CARRIER', 'CVF', 'SUPER_CARRIER', 'CS', 'CITY_SHIP'],
 } as const;
 
 export const SHIPYARD_DEFINITIONS: Record<
@@ -80,7 +80,7 @@ export const SHIPYARD_DEFINITIONS: Record<
     shieldHpMax: 3000,
     description: 'Light orbital slipway for escorts, light cruisers, and autonomous miners.',
     trait: 'Constructs Frigate (FG), Destroyer (DD), Light Cruiser (CL), Autonomous Miner (MINER).',
-    radius: 38,
+    radius: 13,
     dockingRadius: 75,
     supportedHulls: ['FG', 'DD', 'CL', 'MINER', 'MN', 'FRIGATE', 'DESTROYER', 'LIGHT_CRUISER'],
   },
@@ -96,7 +96,7 @@ export const SHIPYARD_DEFINITIONS: Record<
     shieldHpMax: 5000,
     description: 'Medium orbital slipway for capital cruisers and fleet logistics vessels.',
     trait: 'Constructs Heavy Cruiser (CH), Battlecruiser (BC), Fleet Repair Ship (REP_SHIP), Fleet Collier (COLLIER), Fuel Tanker (TANKER), Salvager (SALVAGER).',
-    radius: 46,
+    radius: 21,
     dockingRadius: 95,
     supportedHulls: ['CH', 'BC', 'REP_SHIP', 'REP', 'COLLIER', 'COL', 'TANKER', 'TNK', 'SALVAGER', 'SCP', 'HEAVY_CRUISER', 'BATTLECRUISER', 'REPAIR', 'SCRAP'],
   },
@@ -111,10 +111,10 @@ export const SHIPYARD_DEFINITIONS: Record<
     hullMax: 15000,
     shieldHpMax: 10000,
     description: 'Super-heavy orbital drydock for line battleships, dreadnoughts, and super-capital carriers.',
-    trait: 'Constructs Battleship (BB), Dreadnought (DN), and Super-Capital Carriers (CV, CVF).',
-    radius: 56,
+    trait: 'Constructs Battleship (BB), Dreadnought (DN), Super-Capital Carriers (CV, CVF), and Yestiri City Ship (CS).',
+    radius: 30,
     dockingRadius: 130,
-    supportedHulls: ['BB', 'DN', 'CV', 'CVF', 'BATTLESHIP', 'DREADNOUGHT', 'CARRIER', 'SUPER_CARRIER'],
+    supportedHulls: ['BB', 'DN', 'CV', 'CVF', 'BATTLESHIP', 'DREADNOUGHT', 'CARRIER', 'SUPER_CARRIER', 'CS', 'CITY_SHIP'],
   },
 };
 
@@ -139,7 +139,7 @@ export const RESEARCH_STATION_DEFINITIONS: Record<
     shieldHpMax: 3000,
     description: 'Orbital laboratory synthesizing advanced warship telemetry, targeting suites, and hull alloys.',
     trait: '+1 Military Lab tier capacity. Requires placement inside an active planetary, lunar, or tight asteroid cluster gravity well.',
-    radius: 32,
+    radius: 16.67,
     dockingRadius: 60,
   },
   CIVIC_RESEARCH: {
@@ -156,7 +156,7 @@ export const RESEARCH_STATION_DEFINITIONS: Record<
     shieldHpMax: 2500,
     description: 'Civic scientific research outpost analyzing propulsion kinetics, logistics throughput, and sensor resolution.',
     trait: '+1 Civic Lab tier capacity. Requires placement inside an active gravity well.',
-    radius: 30,
+    radius: 16.67,
     dockingRadius: 50,
   },
   EXPANSION_CITADEL: {
@@ -173,7 +173,7 @@ export const RESEARCH_STATION_DEFINITIONS: Record<
     shieldHpMax: 6000,
     description: 'Regional orbital command bastion providing sovereign anchoring, deep-space logistics, rearm, and repair.',
     trait: '+1 Expansion Lab tier capacity. Requires placement inside an active gravity well.',
-    radius: 50,
+    radius: 21,
     dockingRadius: 120,
   },
 };

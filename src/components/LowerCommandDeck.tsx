@@ -217,6 +217,16 @@ export const LowerCommandDeck: React.FC<LowerCommandDeckProps> = ({
                     {getRoleBadge(selectedShip.role).label}
                   </span>
                   <span className="text-slate-600">[{getRoleBadge(selectedShip.role).code}]</span>
+                  {selectedShip.hullState === 'CRIPPLED' && (
+                    <span className="text-[9px] px-1 py-0.2 rounded font-bold bg-amber-950/80 border border-amber-500/80 text-amber-300">
+                      CRIPPLED
+                    </span>
+                  )}
+                  {selectedShip.hullState === 'DISABLED' && (
+                    <span className="text-[9px] px-1 py-0.2 rounded font-bold bg-rose-950/90 border border-rose-500/90 text-rose-300 animate-pulse">
+                      DISABLED
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -230,6 +240,11 @@ export const LowerCommandDeck: React.FC<LowerCommandDeckProps> = ({
                     )}{' '}
                     km/s
                   </strong>
+                  {selectedShip.role === 'SCRAP' && (
+                    <span className="ml-1 text-emerald-400 font-bold">
+                      • HOLD: {selectedShip.scrapUnits || 0}/3U
+                    </span>
+                  )}
                 </div>
                 <div>
                   H2:{' '}
@@ -239,6 +254,11 @@ export const LowerCommandDeck: React.FC<LowerCommandDeckProps> = ({
                   <span className="text-slate-600">
                     /{Math.round(selectedShip.h2FuelMax)}
                   </span>
+                  {(selectedShip.maxRepairableHull ?? selectedShip.hullMax) < selectedShip.hullMax && (
+                    <span className="ml-1 text-rose-400 font-bold" title="Permanent Frame Damage Cap">
+                      • CAP: {Math.round(((selectedShip.maxRepairableHull ?? selectedShip.hullMax) / selectedShip.hullMax) * 100)}%
+                    </span>
+                  )}
                 </div>
               </div>
             </div>

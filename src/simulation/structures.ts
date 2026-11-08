@@ -10,6 +10,8 @@ export interface StructureDef {
   category: 'SHIPYARD' | 'DEFENSE' | 'SUPPORT' | 'INDUSTRIAL';
   costMetallic: number;
   costOrganic: number;
+  costOre?: number;
+  neridiumCost?: number;
   buildTicks?: number;
   buildDurationSeconds?: number;
   hullMax: number;
@@ -20,6 +22,10 @@ export interface StructureDef {
   dockingRadius?: number;
   mooring?: string;
   capacity?: string;
+  missileInventory?: number;
+  missileTubes?: number;
+  salvoCooldownSeconds?: number;
+  isGarnLongRange?: boolean;
 }
 
 export const STRUCTURE_CATALOG: Record<StructureType, StructureDef> = {
@@ -35,7 +41,7 @@ export const STRUCTURE_CATALOG: Record<StructureType, StructureDef> = {
     description: 'Light orbital slipway for escorts, light cruisers, and autonomous miners.',
     trait: 'Constructs Frigate (FG), Destroyer (DD), Light Cruiser (CL), Autonomous Miner (MINER).',
     mooring: 'Requires placement inside an active gravity well.',
-    radius: 38,
+    radius: 13,
     dockingRadius: 75,
   },
   SY_MEDIUM: {
@@ -51,7 +57,7 @@ export const STRUCTURE_CATALOG: Record<StructureType, StructureDef> = {
     trait: 'Constructs Heavy Cruiser (CH), Battlecruiser (BC), Fleet Repair Ship (REP_SHIP), Fleet Collier (COLLIER), Fuel Tanker (TANKER), Salvager (SALVAGER).',
     mooring: 'Requires placement inside an active gravity well.',
     capacity: 'Prerequisite: Civic Tier 3 / Military Tier 4',
-    radius: 46,
+    radius: 21,
     dockingRadius: 95,
   },
   SY_HEAVY: {
@@ -67,7 +73,7 @@ export const STRUCTURE_CATALOG: Record<StructureType, StructureDef> = {
     trait: 'Constructs Battleship (BB), Dreadnought (DN), and Super-Capital Carriers (CV, CVF).',
     mooring: 'Requires placement inside an active gravity well.',
     capacity: 'Prerequisite: Military Tier 7',
-    radius: 56,
+    radius: 30,
     dockingRadius: 130,
   },
   MILITARY_RESEARCH: {
@@ -85,7 +91,7 @@ export const STRUCTURE_CATALOG: Record<StructureType, StructureDef> = {
     trait: '+1 Military Lab tier capacity. Requires placement inside an active planetary, lunar, or tight asteroid cluster gravity well.',
     mooring: 'Requires placement inside an active planetary, lunar, or tight asteroid cluster gravity well.',
     capacity: '+1 Military Lab tier capacity',
-    radius: 32,
+    radius: 16.67,
     dockingRadius: 60,
   },
   CIVIC_RESEARCH: {
@@ -103,7 +109,7 @@ export const STRUCTURE_CATALOG: Record<StructureType, StructureDef> = {
     trait: '+1 Civic Lab tier capacity. Requires placement inside an active gravity well.',
     mooring: 'Requires placement inside an active gravity well.',
     capacity: '+1 Civic Lab tier capacity',
-    radius: 30,
+    radius: 16.67,
     dockingRadius: 50,
   },
   EXPANSION_CITADEL: {
@@ -121,7 +127,7 @@ export const STRUCTURE_CATALOG: Record<StructureType, StructureDef> = {
     trait: '+1 Expansion Lab tier capacity. Requires placement inside an active gravity well.',
     mooring: 'Requires placement inside an active gravity well.',
     capacity: '+1 Expansion Lab tier capacity',
-    radius: 50,
+    radius: 21,
     dockingRadius: 120,
   },
   POST_SENSOR_SM: {
@@ -219,7 +225,7 @@ export const STRUCTURE_CATALOG: Record<StructureType, StructureDef> = {
     shieldHpMax: 3000,
     description: 'Converts raw ore at double HQ throughput (refines 3 Ore every 1.5 seconds).',
     trait: 'Conversion Yield: Identical 52% Metallic and 48% Organic split (1 Ore = 0.52 Met + 0.48 Org).',
-    radius: 36,
+    radius: 27,
   },
   BASTION: {
     type: 'BASTION',
@@ -289,11 +295,32 @@ export const STRUCTURE_CATALOG: Record<StructureType, StructureDef> = {
     radius: 50,
     dockingRadius: 120,
   },
+  GARN_MISSILE_POD: {
+    type: 'GARN_MISSILE_POD',
+    name: 'System Defense Missile Pod',
+    code: 'SDMP',
+    category: 'DEFENSE',
+    costMetallic: 18500,
+    costOrganic: 4200,
+    costOre: 12000,
+    neridiumCost: 24,
+    hullMax: 35000,
+    shieldHpMax: 18000,
+    radius: 34,
+    description: 'Stationary deep-space theater defense bastion mounting a 64-tube vertical launch array.',
+    trait: 'Infinite-range radar-guided missile bombardment across the star system. Firing requires active target radar lock (cannot target passive contacts). Long-range salvos (>8,500 km) suffer a 5% hit clamp.',
+    missileInventory: 2500,
+    missileTubes: 64,
+    salvoCooldownSeconds: 12.0,
+    isGarnLongRange: true,
+  },
 };
+
+export const GARN_SYSTEM_MISSILE_POD_PROTOTYPE = STRUCTURE_CATALOG.GARN_MISSILE_POD;
 
 /**
  * Valid structures presented in HQ and Builder placement menus:
- * SY-L, SY-M, SY-H, MRS, CRO, EXC, POST-S, POST-M, POST-L
+ * SY-L, SY-M, SY-H, MRS, CRO, EXC, POST-S, POST-M, POST-L, SDMP
  */
 export const STRUCTURE_LIST: StructureDef[] = [
   STRUCTURE_CATALOG.SY_LIGHT,
@@ -305,6 +332,7 @@ export const STRUCTURE_LIST: StructureDef[] = [
   STRUCTURE_CATALOG.POST_SENSOR_SM,
   STRUCTURE_CATALOG.POST_SENSOR_MD,
   STRUCTURE_CATALOG.POST_SENSOR_LG,
+  STRUCTURE_CATALOG.GARN_MISSILE_POD,
 ];
 
 /**
@@ -339,6 +367,7 @@ export function createGhostStructureEntity(
     faction: 'FRIENDLY',
     role: type as any,
     structureType: type,
+    radius: def.radius,
     isStationary: true,
     isStructure: true,
     pos: { ...pos },

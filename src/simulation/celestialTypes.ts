@@ -115,9 +115,10 @@ export function calculateDynamicGravityWellRadius(
   bodyRadiusFallback: number = 0
 ): number {
   if (typeof bodyOrRating === 'object' && bodyOrRating !== null) {
-    // Asteroid clusters exempt from dynamic scaling, retaining fixed 1,800 km capture zone
+    // Asteroid clusters have their own capture gravity well equal to cluster size + 10% (1.10x envelope)
     if (bodyOrRating.isAsteroidCluster === true || bodyOrRating.type === 'ASTEROID_CLUSTER') {
-      return bodyOrRating.wellRadius ?? FIXED_ASTEROID_CLUSTER_WELL_RADIUS;
+      const clusterR = bodyOrRating.radius || bodyOrRating.wellRadius || bodyRadiusFallback || 2200;
+      return bodyOrRating.wellRadius ?? Math.round(clusterR * 1.10);
     }
 
     let g = bodyOrRating.gravityRating ?? 1.0;
